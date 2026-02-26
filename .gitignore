@@ -1,0 +1,23 @@
+# Logs
+bypass.log
+bypass.log.*
+
+# Strategy cache & stats (auto-generated)
+strategy_cache.json
+stats.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# IDE
+.vscode/
+.idea/
+.claude/
+.gemini/
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
