@@ -298,13 +298,52 @@ HEALTH_CHECK_INTERVAL = 60
 IP_UPDATE_INTERVAL = 300
 
 STRATEGY_ORDER = ['direct', 'host_split', 'fragment_light', 'tls_record_frag',
-                   'fragment_burst', 'desync', 'fragment_heavy', 'sni_shuffle']
+                   'fragment_burst', 'desync', 'fragment_heavy', 'sni_shuffle',
+                   'fake_tls_inject', 'triple_split', 'sni_padding',
+                   'reverse_frag', 'slow_drip', 'oob_inline', 'dot_shuffle',
+                   'tls_multi_record', 'tls_mixed_delay', 'sni_split_byte',
+                   'header_fragment', 'tls_zero_frag', 'tls_frag_overlap',
+                   'tls_version_mix', 'tls_random_pad_frag',
+                   'tls_interleaved_ccs', 'tcp_window_frag']
 STRATEGY_SUCCESS_TIMEOUT = 10.0
 STRATEGY_FAILURE_COOLDOWN = 3600
 STRATEGY_RETEST_INTERVAL = 7200
 STRATEGY_SAVE_INTERVAL = 60
 STRATEGY_CACHE_FILE = os.path.join(_script_dir, 'strategy_cache.json')
 STATS_FILE = os.path.join(_script_dir, 'stats.json')
+AI_STRATEGY_FILE = os.path.join(_script_dir, 'ai_strategy.json')
+AI_SAVE_INTERVAL = 120
+AI_MIN_SAMPLES = 5          # Minimum samples before AI predictions activate
+AI_EXPLORATION_RATE = 0.15  # Legacy: kept for reference, Thompson Sampling replaces this
+AI_DECAY_FACTOR = 0.95      # Weight decay for older observations
+AI_RING_BUFFER_SIZE = 100   # Recent observations ring buffer (was 50)
+AI_DRIFT_CHECK_INTERVAL = 60   # Seconds between drift detection checks
+AI_SELF_TRAIN_INTERVAL = 1800  # Seconds between self-training probes (30min) — default for 'light'
+AI_TRAIN_PROFILES = {
+    'light':    {'interval': 1800, 'probes': 3,  'label': 'Light'},
+    'medium':   {'interval': 600,  'probes': 5,  'label': 'Medium'},
+    'heavy':    {'interval': 120,  'probes': 8,  'label': 'Heavy'},
+    'nonstop':  {'interval': 15,   'probes': 10, 'label': 'Nonstop 24/7'},
+}
+_ai_train_intensity = 'light'
+_self_train_state = {'running': False, 'last_run': 0, 'total_probes': 0, 'last_site': '', 'last_strategy': '', 'last_result': '', 'cycle_count': 0}
+AI_NN_HIDDEN_SIZE = 16         # Neural network hidden layer size
+AI_NN_INPUT_SIZE = 10          # Neural network input features
+AI_NN_LEARNING_RATE = 0.01    # SGD learning rate
+AI_THOMPSON_DECAY_INTERVAL = 200  # Decay Thompson params every N observations
+
+STRATEGY_GROUPS = {
+    'fragmentation': ['fragment_light', 'fragment_burst', 'fragment_heavy', 'header_fragment'],
+    'tls_record': ['tls_record_frag', 'tls_multi_record', 'tls_mixed_delay'],
+    'sni_based': ['sni_shuffle', 'sni_padding', 'sni_split_byte', 'dot_shuffle', 'host_split'],
+    'injection': ['fake_tls_inject', 'desync', 'oob_inline'],
+    'split': ['triple_split', 'reverse_frag', 'slow_drip'],
+    'direct': ['direct'],
+}
+STRATEGY_TO_GROUP = {}
+for _grp, _strats in STRATEGY_GROUPS.items():
+    for _s in _strats:
+        STRATEGY_TO_GROUP[_s] = _grp
 
 BYPASS_DOMAINS, BYPASS_IPS, _domain_to_site, _site_ips, _site_dns = _build_lists_from_config(_config)
 _site_names = list(_config.get('sites', {}).keys())
@@ -367,6 +406,15 @@ _blocked_domains = {}  # domain -> timestamp - fully blocked CDN domains (fast-f
 BLOCKED_DOMAIN_TTL = 300  # 5 minutes: blocked domain retry interval
 _site_semaphores = {}  # site_name -> asyncio.Semaphore - limit concurrent bypass per site
 SITE_MAX_CONCURRENT = 24  # max concurrent bypass connections per site
+
+# ==================== AI TRAINING STATE ====================
+_training_state = {
+    'active': False,
+    'progress': {},      # site_name -> {current_strat, tested, total, pct}
+    'results': {},       # site_name -> {best_strategy, best_ms, all_results: [{strategy, success, ms}]}
+    'previous_strategies': {},  # site_name -> old strategy (for revert)
+    'completed': False,
+}
 
 # ==================== HELPERS ====================
 
@@ -497,9 +545,98 @@ def _close_writer(w):
         pass
 
 
+def _normalize_tls_failure(exc):
+    if isinstance(exc, ssl.SSLCertVerificationError):
+        detail = getattr(exc, 'verify_message', '') or str(exc) or exc.__class__.__name__
+        detail_l = detail.lower()
+        if 'hostname mismatch' in detail_l:
+            reason = 'hostname_mismatch'
+        else:
+            reason = 'invalid_certificate'
+    elif isinstance(exc, asyncio.TimeoutError):
+        reason, detail = 'timeout', 'TLS handshake timed out'
+    elif isinstance(exc, ConnectionError):
+        reason, detail = 'connection_failed', str(exc) or 'Connection failed'
+    elif isinstance(exc, ssl.SSLError):
+        detail = str(exc) or exc.__class__.__name__
+        if 'alert' in detail.lower():
+            reason = 'tls_alert'
+        else:
+            reason = 'tls_handshake_failed'
+    elif isinstance(exc, OSError):
+        reason, detail = 'connection_failed', str(exc) or exc.__class__.__name__
+    else:
+        reason, detail = 'connection_failed', str(exc) or exc.__class__.__name__
+    return reason, detail[:160]
+
+
+def _drain_memory_bio(bio):
+    chunks = []
+    while True:
+        chunk = bio.read()
+        if not chunk:
+            break
+        chunks.append(chunk)
+    return b''.join(chunks)
+
+
+async def _send_probe_payload(writer, payload, strat_name=None, use_strategy=False):
+    if not payload:
+        return
+    if use_strategy and strat_name:
+        await STRATEGY_FUNCS[strat_name](writer, payload)
+    else:
+        writer.write(payload)
+        await writer.drain()
+
+
+async def _verify_tls_strategy(connect_host, server_name, strat_name='direct', port=443, timeout=8):
+    start_t = time.perf_counter()
+    reader = writer = None
+    first_flight = True
+    deadline = time.monotonic() + timeout
+    try:
+        reader, writer = await asyncio.wait_for(asyncio.open_connection(connect_host, port), timeout=timeout)
+        ctx = ssl.create_default_context()
+        incoming = ssl.MemoryBIO()
+        outgoing = ssl.MemoryBIO()
+        tls_obj = ctx.wrap_bio(incoming, outgoing, server_hostname=server_name)
+
+        while True:
+            try:
+                tls_obj.do_handshake()
+                pending = _drain_memory_bio(outgoing)
+                if pending:
+                    await _send_probe_payload(writer, pending, strat_name, use_strategy=first_flight)
+                    first_flight = False
+                elapsed_ms = round((time.perf_counter() - start_t) * 1000, 1)
+                return {'ok': True, 'elapsed_ms': elapsed_ms, 'reason': None, 'detail': None}
+            except ssl.SSLWantWriteError:
+                pending = _drain_memory_bio(outgoing)
+                if pending:
+                    await _send_probe_payload(writer, pending, strat_name, use_strategy=first_flight)
+                    first_flight = False
+            except ssl.SSLWantReadError:
+                pending = _drain_memory_bio(outgoing)
+                if pending:
+                    await _send_probe_payload(writer, pending, strat_name, use_strategy=first_flight)
+                    first_flight = False
+                time_left = max(0.1, deadline - time.monotonic())
+                net_data = await asyncio.wait_for(reader.read(8192), timeout=time_left)
+                if not net_data:
+                    raise ConnectionError("Connection closed during TLS handshake")
+                incoming.write(net_data)
+    except Exception as exc:
+        reason, detail = _normalize_tls_failure(exc)
+        return {'ok': False, 'elapsed_ms': 0, 'reason': reason, 'detail': detail}
+    finally:
+        _close_writer(writer)
+
+
 
 def _atexit_handler():
     _strategy_cache.force_save()
+    _ai_engine.force_save()
     _save_stats()
     set_proxy(False)
 
@@ -507,6 +644,7 @@ atexit.register(_atexit_handler)
 
 def _cleanup_handler(signum, frame):
     _strategy_cache.force_save()
+    _ai_engine.force_save()
     _save_stats()
     set_proxy(False)
     sys.exit(0)
@@ -658,9 +796,13 @@ async def test_site_connection(site_name):
         result = {'status': 'ok', 'ms': elapsed, 'time': _now_iso()}
     except Exception as e:
         elapsed = round((time.perf_counter() - start) * 1000)
-        result = {'status': 'fail', 'ms': elapsed, 'time': _now_iso(), 'error': str(e)[:50]}
+        reason, detail = _normalize_tls_failure(e)
+        result = {'status': 'fail', 'ms': elapsed, 'time': _now_iso(), 'reason': reason, 'error': detail}
     _test_results[site_name] = result
-    logger.info(f"[TEST] {site_name}: {result['status']} ({result.get('ms', 0)}ms)")
+    if result['status'] == 'ok':
+        logger.info(f"[TEST] {site_name}: ok ({result.get('ms', 0)}ms)")
+    else:
+        logger.info(f"[TEST] {site_name}: fail ({result.get('reason', 'unknown')}: {result.get('error', 'n/a')})")
 
     async def _clear_test():
         await asyncio.sleep(8)
@@ -876,20 +1018,19 @@ async def strategy_fragment_heavy(writer, data):
                 sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             except Exception:
                 pass
+        # Split TLS header bytes with small delays
         writer.write(data[:1])
         await writer.drain()
-        await asyncio.sleep(0.05)
-        writer.write(data[1:3])
+        await asyncio.sleep(0.01)
+        writer.write(data[1:5])
         await writer.drain()
-        await asyncio.sleep(0.05)
-        writer.write(data[3:5])
-        await writer.drain()
-        await asyncio.sleep(0.05)
+        await asyncio.sleep(0.01)
+        # Send remaining in larger chunks (16 bytes) with minimal delays
         remaining = data[5:]
-        for i in range(0, len(remaining), 4):
-            writer.write(remaining[i:i + 4])
+        for i in range(0, len(remaining), 16):
+            writer.write(remaining[i:i + 16])
             await writer.drain()
-            await asyncio.sleep(0.005)
+            await asyncio.sleep(0.001)
         _stats['fragments'] += 1
     else:
         writer.write(data)
@@ -923,6 +1064,489 @@ async def strategy_sni_shuffle(writer, data):
         writer.write(data)
         await writer.drain()
 
+async def strategy_fake_tls_inject(writer, data):
+    """Send a fake TLS ChangeCipherSpec record before the real ClientHello to confuse DPI."""
+    if len(data) > 5 and data[0] == 0x16 and data[1] == 0x03:
+        tls_version = data[1:3]
+        # Fake ChangeCipherSpec record (content type 0x14) with 1-byte payload
+        fake_record = b'\x14' + tls_version + b'\x00\x01\x01'
+        writer.write(fake_record)
+        await writer.drain()
+        await asyncio.sleep(0.005)
+        writer.write(data)
+        await writer.drain()
+        _stats['fragments'] += 1
+    else:
+        writer.write(data)
+        await writer.drain()
+
+async def strategy_triple_split(writer, data):
+    """Split TLS record into 3 proper TLS records: header area, SNI area, rest."""
+    if len(data) > 5 and data[0] == 0x16 and data[1] == 0x03:
+        content_type = data[0]
+        tls_version = data[1:3]
+        payload = data[5:]
+        sni_off = _find_sni_offset(data)
+        if sni_off and sni_off > 5:
+            s1 = sni_off - 5
+            sni_sp = _sni_split_point(data)
+            s2 = sni_sp if sni_sp and sni_sp > s1 else s1 + max((len(payload) - s1) // 2, 1)
+        else:
+            third = max(len(payload) // 3, 1)
+            s1, s2 = third, third * 2
+        s1 = max(1, min(s1, len(payload) - 2))
+        s2 = max(s1 + 1, min(s2, len(payload) - 1))
+        for frag in (payload[:s1], payload[s1:s2], payload[s2:]):
+            rec = bytes([content_type]) + tls_version + len(frag).to_bytes(2, 'big') + frag
+            writer.write(rec)
+            await writer.drain()
+            await asyncio.sleep(0.008)
+        _stats['fragments'] += 2
+    else:
+        writer.write(data)
+        await writer.drain()
+
+async def strategy_sni_padding(writer, data):
+    """Inject a TLS padding extension into ClientHello to inflate packet size past DPI buffers."""
+    if len(data) > 5 and data[0] == 0x16 and data[1] == 0x03:
+        try:
+            # Find extensions area and add padding extension (type 0x0015)
+            sni_off = _find_sni_offset(data)
+            if sni_off and sni_off > 43:
+                record_payload = data[5:]
+                # Build padding extension: type=0x0015, length=256, data=256 zero bytes
+                pad_ext = b'\x00\x15\x01\x00' + (b'\x00' * 256)
+                # Insert padding extension right before SNI extension
+                insert_at = sni_off - 5
+                new_payload = record_payload[:insert_at] + pad_ext + record_payload[insert_at:]
+                # Fix extensions length (2 bytes before first extension)
+                # Rebuild as single TLS record
+                content_type = data[0]
+                tls_version = data[1:3]
+                # Fix the handshake length (bytes 6-8 in original = payload[1:4])
+                hs_type = new_payload[0]
+                old_hs_len = int.from_bytes(new_payload[1:4], 'big')
+                new_hs_len = old_hs_len + len(pad_ext)
+                new_payload = bytes([hs_type]) + new_hs_len.to_bytes(3, 'big') + new_payload[4:]
+                # Fix extensions total length
+                new_record = bytes([content_type]) + tls_version + len(new_payload).to_bytes(2, 'big') + new_payload
+                writer.write(new_record)
+                await writer.drain()
+                _stats['fragments'] += 1
+                return
+        except Exception:
+            pass
+    writer.write(data)
+    await writer.drain()
+
+async def strategy_reverse_frag(writer, data):
+    """Send TLS record fragments in reverse order - second half first, then first half."""
+    if len(data) > 5 and data[0] == 0x16 and data[1] == 0x03:
+        content_type = data[0]
+        tls_version = data[1:3]
+        payload = data[5:]
+        split_at = _sni_split_point(data) or min(len(payload) // 2, 50)
+        split_at = max(1, min(split_at, len(payload) - 1))
+        frag1 = payload[:split_at]
+        frag2 = payload[split_at:]
+        rec1 = bytes([content_type]) + tls_version + len(frag1).to_bytes(2, 'big') + frag1
+        rec2 = bytes([content_type]) + tls_version + len(frag2).to_bytes(2, 'big') + frag2
+        # Send second fragment first
+        writer.write(rec2)
+        await writer.drain()
+        await asyncio.sleep(0.01)
+        writer.write(rec1)
+        await writer.drain()
+        _stats['fragments'] += 1
+    else:
+        writer.write(data)
+        await writer.drain()
+
+async def strategy_slow_drip(writer, data):
+    """Send data byte-by-byte with delays to evade DPI reassembly timeouts."""
+    if len(data) > 5 and data[0] == 0x16 and data[1] == 0x03:
+        sock = writer.transport.get_extra_info('socket')
+        if sock:
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except Exception:
+                pass
+        # Send first 10 bytes one by one with delays (covers TLS header + start of handshake)
+        drip_len = min(10, len(data))
+        for i in range(drip_len):
+            writer.write(data[i:i+1])
+            await writer.drain()
+            await asyncio.sleep(0.05)
+        # Send rest in one chunk
+        if drip_len < len(data):
+            writer.write(data[drip_len:])
+            await writer.drain()
+        _stats['fragments'] += 1
+    else:
+        writer.write(data)
+        await writer.drain()
+
+async def strategy_oob_inline(writer, data):
+    """Use TCP urgent (OOB) data to inject a byte that DPI may process but server ignores."""
+    if len(data) > 5 and data[0] == 0x16 and data[1] == 0x03:
+        sock = writer.transport.get_extra_info('socket')
+        if sock:
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                # Send 1 byte as OOB/urgent data - DPI sees it inline, TLS server ignores it
+                sock.send(b'\x00', socket.MSG_OOB)
+            except Exception:
+                pass
+        await asyncio.sleep(0.005)
+        # Now send real data fragmented at SNI
+        content_type = data[0]
+        tls_version = data[1:3]
+        payload = data[5:]
+        split_at = _sni_split_point(data) or min(len(payload) // 2, 50)
+        split_at = max(1, min(split_at, len(payload) - 1))
+        frag1 = payload[:split_at]
+        rec1 = bytes([content_type]) + tls_version + len(frag1).to_bytes(2, 'big') + frag1
+        frag2 = payload[split_at:]
+        rec2 = bytes([content_type]) + tls_version + len(frag2).to_bytes(2, 'big') + frag2
+        writer.write(rec1)
+        await writer.drain()
+        await asyncio.sleep(0.01)
+        writer.write(rec2)
+        await writer.drain()
+        _stats['fragments'] += 1
+    else:
+        writer.write(data)
+        await writer.drain()
+
+async def strategy_dot_shuffle(writer, data):
+    """Randomize the case of the SNI hostname - some DPI does case-sensitive matching."""
+    if len(data) > 5 and data[0] == 0x16 and data[1] == 0x03:
+        try:
+            sni_off = _find_sni_offset(data)
+            if sni_off:
+                # SNI extension: type(2) + len(2) + list_len(2) + type(1) + name_len(2) + name
+                name_start = sni_off + 9
+                name_len = int.from_bytes(data[sni_off+7:sni_off+9], 'big')
+                if name_start + name_len <= len(data) and 0 < name_len < 500:
+                    modified = bytearray(data)
+                    for i in range(name_start, name_start + name_len):
+                        ch = modified[i]
+                        if 0x61 <= ch <= 0x7a:  # lowercase a-z
+                            if (i % 2) == 0:
+                                modified[i] = ch - 32  # to uppercase
+                    # Send as TLS record fragments with modified SNI
+                    content_type = modified[0]
+                    tls_version = bytes(modified[1:3])
+                    payload = bytes(modified[5:])
+                    split_at = _sni_split_point(data) or min(len(payload) // 2, 50)
+                    split_at = max(1, min(split_at, len(payload) - 1))
+                    frag1 = payload[:split_at]
+                    rec1 = bytes([content_type]) + tls_version + len(frag1).to_bytes(2, 'big') + frag1
+                    frag2 = payload[split_at:]
+                    rec2 = bytes([content_type]) + tls_version + len(frag2).to_bytes(2, 'big') + frag2
+                    writer.write(rec1)
+                    await writer.drain()
+                    await asyncio.sleep(0.01)
+                    writer.write(rec2)
+                    await writer.drain()
+                    _stats['fragments'] += 1
+                    return
+        except Exception:
+            pass
+    writer.write(data)
+    await writer.drain()
+
+async def strategy_tls_multi_record(writer, data):
+    """Split TLS into 5-6 tiny records (1-byte payload each) to overwhelm DPI reassembly."""
+    if len(data) > 5 and data[0] == 0x16 and data[1] == 0x03:
+        content_type = data[0]
+        tls_version = data[1:3]
+        payload = data[5:]
+        # Send first 5 bytes as individual 1-byte TLS records
+        send_individual = min(5, len(payload))
+        for i in range(send_individual):
+            rec = bytes([content_type]) + tls_version + b'\x00\x01' + payload[i:i+1]
+            writer.write(rec)
+            await writer.drain()
+            await asyncio.sleep(0.003)
+        # Send remaining as one record
+        if send_individual < len(payload):
+            rest = payload[send_individual:]
+            rec = bytes([content_type]) + tls_version + len(rest).to_bytes(2, 'big') + rest
+            writer.write(rec)
+            await writer.drain()
+        _stats['fragments'] += 1
+    else:
+        writer.write(data)
+        await writer.drain()
+
+async def strategy_tls_mixed_delay(writer, data):
+    """TLS record fragmentation with random delays between fragments to break DPI timing."""
+    if len(data) > 5 and data[0] == 0x16 and data[1] == 0x03:
+        import random
+        content_type = data[0]
+        tls_version = data[1:3]
+        payload = data[5:]
+        split_at = _sni_split_point(data) or min(len(payload) // 2, 50)
+        split_at = max(1, min(split_at, len(payload) - 1))
+        frag1 = payload[:split_at]
+        rec1 = bytes([content_type]) + tls_version + len(frag1).to_bytes(2, 'big') + frag1
+        frag2 = payload[split_at:]
+        rec2 = bytes([content_type]) + tls_version + len(frag2).to_bytes(2, 'big') + frag2
+        writer.write(rec1)
+        await writer.drain()
+        # Random delay between 5-50ms
+        await asyncio.sleep(random.uniform(0.005, 0.05))
+        writer.write(rec2)
+        await writer.drain()
+        _stats['fragments'] += 1
+    else:
+        writer.write(data)
+        await writer.drain()
+
+async def strategy_sni_split_byte(writer, data):
+    """Split into 3 TLS records: pre-SNI, single SNI middle byte, post-SNI."""
+    if len(data) > 5 and data[0] == 0x16 and data[1] == 0x03:
+        content_type = data[0]
+        tls_version = data[1:3]
+        payload = data[5:]
+        sni_mid = _sni_split_point(data)
+        if sni_mid and 1 < sni_mid < len(payload) - 1:
+            # 3 records: everything before SNI middle, 1 byte at SNI middle, everything after
+            parts = [payload[:sni_mid], payload[sni_mid:sni_mid+1], payload[sni_mid+1:]]
+            for p in parts:
+                rec = bytes([content_type]) + tls_version + len(p).to_bytes(2, 'big') + p
+                writer.write(rec)
+                await writer.drain()
+                await asyncio.sleep(0.008)
+            _stats['fragments'] += 2
+        else:
+            # Fallback to regular 2-way split
+            split_at = min(len(payload) // 2, 50)
+            split_at = max(1, min(split_at, len(payload) - 1))
+            frag1 = payload[:split_at]
+            rec1 = bytes([content_type]) + tls_version + len(frag1).to_bytes(2, 'big') + frag1
+            frag2 = payload[split_at:]
+            rec2 = bytes([content_type]) + tls_version + len(frag2).to_bytes(2, 'big') + frag2
+            writer.write(rec1)
+            await writer.drain()
+            await asyncio.sleep(0.008)
+            writer.write(rec2)
+            await writer.drain()
+            _stats['fragments'] += 1
+    else:
+        writer.write(data)
+        await writer.drain()
+
+async def strategy_header_fragment(writer, data):
+    """Fragment the TLS record header itself across TCP segments - DPI can't even parse the header."""
+    if len(data) > 5 and data[0] == 0x16 and data[1] == 0x03:
+        sock = writer.transport.get_extra_info('socket')
+        if sock:
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            except Exception:
+                pass
+        # Send TLS header in 2 pieces: content_type+version (3 bytes), then length (2 bytes)
+        writer.write(data[:3])
+        await writer.drain()
+        await asyncio.sleep(0.01)
+        writer.write(data[3:5])
+        await writer.drain()
+        await asyncio.sleep(0.01)
+        # Send payload in 2 chunks at SNI split point
+        payload_start = 5
+        sni_mid = _sni_split_point(data)
+        if sni_mid:
+            abs_split = payload_start + sni_mid
+            writer.write(data[payload_start:abs_split])
+            await writer.drain()
+            await asyncio.sleep(0.005)
+            writer.write(data[abs_split:])
+        else:
+            writer.write(data[payload_start:])
+        await writer.drain()
+        _stats['fragments'] += 1
+    else:
+        writer.write(data)
+        await writer.drain()
+
+async def strategy_tls_zero_frag(writer, data):
+    """Inject zero-length TLS records between real fragments to confuse DPI state machine."""
+    if len(data) > 5 and data[0] == 0x16 and data[1] == 0x03:
+        content_type = data[0]
+        tls_version = data[1:3]
+        payload = data[5:]
+        split_at = _sni_split_point(data) or min(len(payload) // 2, 50)
+        split_at = max(1, min(split_at, len(payload) - 1))
+        # Zero-length TLS record (valid per spec, servers silently ignore)
+        empty_rec = bytes([content_type]) + tls_version + b'\x00\x00'
+        frag1 = payload[:split_at]
+        rec1 = bytes([content_type]) + tls_version + len(frag1).to_bytes(2, 'big') + frag1
+        frag2 = payload[split_at:]
+        rec2 = bytes([content_type]) + tls_version + len(frag2).to_bytes(2, 'big') + frag2
+        # Pattern: empty, frag1, empty, empty, frag2
+        writer.write(empty_rec)
+        await writer.drain()
+        await asyncio.sleep(0.003)
+        writer.write(rec1)
+        await writer.drain()
+        await asyncio.sleep(0.005)
+        writer.write(empty_rec)
+        await writer.drain()
+        writer.write(empty_rec)
+        await writer.drain()
+        await asyncio.sleep(0.003)
+        writer.write(rec2)
+        await writer.drain()
+        _stats['fragments'] += 1
+    else:
+        writer.write(data)
+        await writer.drain()
+
+async def strategy_tls_frag_overlap(writer, data):
+    """Send overlapping TLS record fragments - DPI can't resolve which data to use."""
+    if len(data) > 5 and data[0] == 0x16 and data[1] == 0x03:
+        content_type = data[0]
+        tls_version = data[1:3]
+        payload = data[5:]
+        split_at = _sni_split_point(data) or min(len(payload) // 2, 50)
+        split_at = max(1, min(split_at, len(payload) - 1))
+        # First record: payload up to split_at + 4 extra overlap bytes
+        overlap = min(4, len(payload) - split_at)
+        frag1 = payload[:split_at + overlap]
+        rec1 = bytes([content_type]) + tls_version + len(frag1).to_bytes(2, 'big') + frag1
+        # Second record: starts from split_at (overlaps by 'overlap' bytes)
+        frag2 = payload[split_at:]
+        rec2 = bytes([content_type]) + tls_version + len(frag2).to_bytes(2, 'big') + frag2
+        writer.write(rec1)
+        await writer.drain()
+        await asyncio.sleep(0.008)
+        writer.write(rec2)
+        await writer.drain()
+        _stats['fragments'] += 1
+    else:
+        writer.write(data)
+        await writer.drain()
+
+async def strategy_tls_version_mix(writer, data):
+    """Send TLS record fragments with different version bytes to confuse DPI session tracking."""
+    if len(data) > 5 and data[0] == 0x16 and data[1] == 0x03:
+        content_type = data[0]
+        payload = data[5:]
+        # Three different TLS versions
+        versions = [b'\x03\x01', b'\x03\x03', b'\x03\x02']  # TLS 1.0, 1.2, 1.1
+        split_at = _sni_split_point(data) or min(len(payload) // 2, 50)
+        split_at = max(1, min(split_at, len(payload) - 1))
+        # Split into 3 parts
+        s1 = max(1, split_at // 2)
+        s2 = split_at
+        parts = [payload[:s1], payload[s1:s2], payload[s2:]]
+        for i, part in enumerate(parts):
+            ver = versions[i % len(versions)]
+            rec = bytes([content_type]) + ver + len(part).to_bytes(2, 'big') + part
+            writer.write(rec)
+            await writer.drain()
+            await asyncio.sleep(0.005)
+        _stats['fragments'] += 2
+    else:
+        writer.write(data)
+        await writer.drain()
+
+async def strategy_tls_random_pad_frag(writer, data):
+    """Split TLS payload into random-sized chunks (3-30 bytes) to defeat DPI pattern matching."""
+    if len(data) > 5 and data[0] == 0x16 and data[1] == 0x03:
+        content_type = data[0]
+        tls_version = data[1:3]
+        payload = data[5:]
+        pos = 0
+        while pos < len(payload):
+            # Random chunk size between 3 and 30 bytes
+            chunk_size = random.randint(3, 30)
+            chunk = payload[pos:pos + chunk_size]
+            rec = bytes([content_type]) + tls_version + len(chunk).to_bytes(2, 'big') + chunk
+            writer.write(rec)
+            await writer.drain()
+            await asyncio.sleep(random.uniform(0.002, 0.008))
+            pos += chunk_size
+        _stats['fragments'] += 1
+    else:
+        writer.write(data)
+        await writer.drain()
+
+async def strategy_tls_interleaved_ccs(writer, data):
+    """Interleave fake CCS and Alert records between ClientHello fragments to disrupt DPI state."""
+    if len(data) > 5 and data[0] == 0x16 and data[1] == 0x03:
+        content_type = data[0]
+        tls_version = data[1:3]
+        payload = data[5:]
+        split_at = _sni_split_point(data) or min(len(payload) // 2, 50)
+        split_at = max(1, min(split_at, len(payload) - 1))
+        # Fake ChangeCipherSpec record (type 0x14)
+        fake_ccs = b'\x14' + tls_version + b'\x00\x01\x01'
+        # Fake Alert record (type 0x15) - warning level, close_notify
+        fake_alert = b'\x15' + tls_version + b'\x00\x02\x01\x00'
+        frag1 = payload[:split_at]
+        rec1 = bytes([content_type]) + tls_version + len(frag1).to_bytes(2, 'big') + frag1
+        frag2 = payload[split_at:]
+        rec2 = bytes([content_type]) + tls_version + len(frag2).to_bytes(2, 'big') + frag2
+        # Send: CCS -> frag1 -> Alert -> frag2 -> CCS
+        writer.write(fake_ccs)
+        await writer.drain()
+        await asyncio.sleep(0.003)
+        writer.write(rec1)
+        await writer.drain()
+        await asyncio.sleep(0.005)
+        writer.write(fake_alert)
+        await writer.drain()
+        await asyncio.sleep(0.003)
+        writer.write(rec2)
+        await writer.drain()
+        await asyncio.sleep(0.003)
+        writer.write(fake_ccs)
+        await writer.drain()
+        _stats['fragments'] += 1
+    else:
+        writer.write(data)
+        await writer.drain()
+
+async def strategy_tcp_window_frag(writer, data):
+    """Combine small TCP window with TLS record fragmentation to force tiny TCP segments."""
+    if len(data) > 5 and data[0] == 0x16 and data[1] == 0x03:
+        sock = writer.transport.get_extra_info('socket')
+        if sock:
+            try:
+                sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 256)
+            except Exception:
+                pass
+        content_type = data[0]
+        tls_version = data[1:3]
+        payload = data[5:]
+        split_at = _sni_split_point(data) or min(len(payload) // 2, 50)
+        split_at = max(1, min(split_at, len(payload) - 1))
+        frag1 = payload[:split_at]
+        rec1 = bytes([content_type]) + tls_version + len(frag1).to_bytes(2, 'big') + frag1
+        frag2 = payload[split_at:]
+        rec2 = bytes([content_type]) + tls_version + len(frag2).to_bytes(2, 'big') + frag2
+        # Send each record byte-by-byte in small bursts to create tiny TCP segments
+        for chunk in [rec1, rec2]:
+            for i in range(0, len(chunk), 5):
+                writer.write(chunk[i:i+5])
+                await writer.drain()
+                await asyncio.sleep(0.002)
+            await asyncio.sleep(0.005)
+        # Restore send buffer
+        if sock:
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
+            except Exception:
+                pass
+        _stats['fragments'] += 1
+    else:
+        writer.write(data)
+        await writer.drain()
+
 STRATEGY_FUNCS = {
     'direct': strategy_direct,
     'host_split': strategy_host_split,
@@ -932,6 +1556,23 @@ STRATEGY_FUNCS = {
     'desync': strategy_desync,
     'fragment_heavy': strategy_fragment_heavy,
     'sni_shuffle': strategy_sni_shuffle,
+    'fake_tls_inject': strategy_fake_tls_inject,
+    'triple_split': strategy_triple_split,
+    'sni_padding': strategy_sni_padding,
+    'reverse_frag': strategy_reverse_frag,
+    'slow_drip': strategy_slow_drip,
+    'oob_inline': strategy_oob_inline,
+    'dot_shuffle': strategy_dot_shuffle,
+    'tls_multi_record': strategy_tls_multi_record,
+    'tls_mixed_delay': strategy_tls_mixed_delay,
+    'sni_split_byte': strategy_sni_split_byte,
+    'header_fragment': strategy_header_fragment,
+    'tls_zero_frag': strategy_tls_zero_frag,
+    'tls_frag_overlap': strategy_tls_frag_overlap,
+    'tls_version_mix': strategy_tls_version_mix,
+    'tls_random_pad_frag': strategy_tls_random_pad_frag,
+    'tls_interleaved_ccs': strategy_tls_interleaved_ccs,
+    'tcp_window_frag': strategy_tcp_window_frag,
 }
 
 # ==================== STRATEGY CACHE ====================
@@ -997,6 +1638,37 @@ class StrategyCache:
         if forced and forced != 'auto' and forced in STRATEGY_FUNCS:
             return [forced]
 
+        # --- AI-powered strategy selection ---
+        if is_main:
+            ai_prediction = _ai_engine.predict(site_name, count_as_prediction=True)
+            if ai_prediction:
+                # AI has enough data — use its ranking
+                ai_order = [p[0] for p in ai_prediction]
+                top_conf = ai_prediction[0][2] if ai_prediction else 0
+
+                # Filter out strategies in cooldown (but keep AI ranking)
+                sd = self._get_site_data(site_name)
+                now = time.time()
+                result = []
+                cooldown_strats = []
+                for strat in ai_order:
+                    fail_info = sd['failures'].get(strat)
+                    if fail_info:
+                        last_fail_time = _parse_iso(fail_info.get('last_fail', ''))
+                        if last_fail_time and (now - last_fail_time) < STRATEGY_FAILURE_COOLDOWN:
+                            cooldown_strats.append(strat)
+                            continue
+                    result.append(strat)
+
+                if result:
+                    logger.debug(f"[AI] {site_name}: predicted [{result[0]}] "
+                                 f"(conf={top_conf}, order={','.join(result[:3])})")
+                    return result
+                # All in cooldown — fall through to cooldown recovery
+                if cooldown_strats:
+                    return cooldown_strats[:4]
+
+        # --- Fallback: original logic ---
         sd = self._get_site_data(site_name)
         now = time.time()
         result = []
@@ -1008,12 +1680,12 @@ class StrategyCache:
         for strat in STRATEGY_ORDER:
             if strat in result:
                 continue
-            
+
             # If it's a CDN domain, ignore recent failures and try all
             if not is_main:
                 result.append(strat)
                 continue
-                
+
             fail_info = sd['failures'].get(strat)
             if fail_info:
                 last_fail_time = _parse_iso(fail_info.get('last_fail', ''))
@@ -1038,6 +1710,10 @@ class StrategyCache:
         succ['count'] = old_count + 1
         succ['avg_ms'] = round((old_avg * old_count + elapsed_ms) / (old_count + 1), 1)
         succ['last_ok'] = now_iso
+        # Reset consecutive failure counter on success
+        fail = sd['failures'].get(strategy)
+        if fail:
+            fail['consecutive'] = 0
         if sd['best_strategy'] is None or elapsed_ms < (sd.get('best_time_ms') or 99999):
             sd['best_strategy'] = strategy
             sd['best_time_ms'] = round(elapsed_ms, 1)
@@ -1047,10 +1723,12 @@ class StrategyCache:
 
     def record_failure(self, site_name, strategy):
         sd = self._get_site_data(site_name)
-        fail = sd['failures'].setdefault(strategy, {'count': 0, 'last_fail': ''})
+        fail = sd['failures'].setdefault(strategy, {'count': 0, 'last_fail': '', 'consecutive': 0})
         fail['count'] += 1
         fail['last_fail'] = _now_iso()
-        if sd['best_strategy'] == strategy:
+        fail['consecutive'] = fail.get('consecutive', 0) + 1
+        # Only clear best_strategy after 3+ consecutive failures
+        if sd['best_strategy'] == strategy and fail['consecutive'] >= 3:
             sd['best_strategy'] = None
             sd['best_time_ms'] = None
         self._dirty = True
@@ -1073,6 +1751,931 @@ class StrategyCache:
 
 
 _strategy_cache = StrategyCache()
+
+# ==================== ADAPTIVE AI STRATEGY ENGINE v3 ====================
+
+import math
+import random as _rng
+
+class MiniNN:
+    """2-layer feedforward neural network. Pure Python, zero dependencies.
+    Used for per-site strategy success prediction."""
+
+    def __init__(self, input_size=AI_NN_INPUT_SIZE, hidden_size=AI_NN_HIDDEN_SIZE, output_size=1):
+        self.input_size = input_size
+        self.hidden_size = hidden_size
+        self.output_size = output_size
+        self.lr = AI_NN_LEARNING_RATE
+        # Xavier initialization
+        s1 = (2.0 / (input_size + hidden_size)) ** 0.5
+        s2 = (2.0 / (hidden_size + output_size)) ** 0.5
+        self.W1 = [[_rng.gauss(0, s1) for _ in range(hidden_size)] for _ in range(input_size)]
+        self.b1 = [0.0] * hidden_size
+        self.W2 = [[_rng.gauss(0, s2) for _ in range(output_size)] for _ in range(hidden_size)]
+        self.b2 = [0.0] * output_size
+
+    def forward(self, x):
+        """Forward pass. Returns (output_list, cache_tuple)."""
+        z1 = [sum(x[i] * self.W1[i][j] for i in range(self.input_size)) + self.b1[j]
+              for j in range(self.hidden_size)]
+        h1 = [max(0.0, z) for z in z1]  # ReLU
+        z2 = [sum(h1[i] * self.W2[i][j] for i in range(self.hidden_size)) + self.b2[j]
+              for j in range(self.output_size)]
+        out = [1.0 / (1.0 + math.exp(-max(-500, min(500, z)))) for z in z2]  # Sigmoid
+        return out, (x, z1, h1, z2)
+
+    def backward(self, cache, target):
+        """Backpropagation with SGD. Binary cross-entropy gradient."""
+        x, z1, h1, z2 = cache
+        out = [1.0 / (1.0 + math.exp(-max(-500, min(500, z)))) for z in z2]
+        dz2 = [out[j] - target[j] for j in range(self.output_size)]
+        # Update W2, b2
+        for i in range(self.hidden_size):
+            for j in range(self.output_size):
+                self.W2[i][j] -= self.lr * h1[i] * dz2[j]
+        for j in range(self.output_size):
+            self.b2[j] -= self.lr * dz2[j]
+        # Backprop to hidden
+        dh1 = [sum(dz2[j] * self.W2[i][j] for j in range(self.output_size))
+               for i in range(self.hidden_size)]
+        dz1 = [dh1[i] * (1.0 if z1[i] > 0 else 0.0) for i in range(self.hidden_size)]
+        # Update W1, b1
+        for i in range(self.input_size):
+            for j in range(self.hidden_size):
+                self.W1[i][j] -= self.lr * x[i] * dz1[j]
+        for j in range(self.hidden_size):
+            self.b1[j] -= self.lr * dz1[j]
+
+    def to_dict(self):
+        return {'W1': self.W1, 'b1': self.b1, 'W2': self.W2, 'b2': self.b2,
+                'is': self.input_size, 'hs': self.hidden_size, 'os': self.output_size}
+
+    @classmethod
+    def from_dict(cls, d):
+        nn = cls(d.get('is', AI_NN_INPUT_SIZE), d.get('hs', AI_NN_HIDDEN_SIZE), d.get('os', 1))
+        nn.W1, nn.b1, nn.W2, nn.b2 = d['W1'], d['b1'], d['W2'], d['b2']
+        return nn
+
+
+class AdaptiveStrategyEngine:
+    """
+    AI Strategy Engine v3 — Real machine learning for DPI bypass.
+    Features: Neural Network scoring, Thompson Sampling exploration,
+    concept drift detection, transfer learning, strategy group learning.
+    Zero external dependencies — pure Python.
+    """
+
+    def __init__(self):
+        self._data = self._default_data()
+        self._dirty = False
+        self._last_save = 0
+        self._nn_cache = {}  # site_name -> MiniNN instance (lazy loaded)
+        self._load()
+
+    @staticmethod
+    def _default_data():
+        return {
+            'version': 3,
+            'sites': {},
+            'global_weights': {
+                s: {'w_success': 1.0, 'w_latency': 1.0, 'w_recency': 1.0, 'w_temporal': 1.0}
+                for s in STRATEGY_ORDER
+            },
+            'global_priors': {},  # Transfer learning: global Beta priors per strategy
+            'total_predictions': 0,
+            'correct_predictions': 0,
+        }
+
+    def _load(self):
+        try:
+            with open(AI_STRATEGY_FILE, 'r', encoding='utf-8') as f:
+                loaded = json.load(f)
+                v = loaded.get('version', 1)
+                if v in (2, 3):
+                    self._data = loaded
+                    # Migrate v2 -> v3
+                    if v == 2:
+                        self._data['version'] = 3
+                        self._data.setdefault('global_priors', {})
+                        for site_ai in self._data.get('sites', {}).values():
+                            site_ai.setdefault('thompson', {})
+                            site_ai.setdefault('nn_weights', None)
+                        self._dirty = True
+                        logger.info("[AI] Migrated model v2 -> v3")
+            # Rebuild NN cache from loaded weights
+            for sname, sai in self._data.get('sites', {}).items():
+                if sai.get('nn_weights'):
+                    try:
+                        self._nn_cache[sname] = MiniNN.from_dict(sai['nn_weights'])
+                    except Exception:
+                        pass
+            # Restore training intensity setting
+            global _ai_train_intensity
+            saved_intensity = self._data.get('train_intensity', 'light')
+            if saved_intensity in AI_TRAIN_PROFILES:
+                _ai_train_intensity = saved_intensity
+            logger.info(f"[AI v3] Model loaded: {len(self._data.get('sites', {}))} sites, "
+                        f"{self._data.get('total_predictions', 0)} predictions, "
+                        f"train_intensity={_ai_train_intensity}")
+        except FileNotFoundError:
+            pass
+        except Exception as e:
+            logger.warning(f"[AI] Model load error: {e}")
+
+    def _save_if_needed(self):
+        if self._dirty and (time.time() - self._last_save) > AI_SAVE_INTERVAL:
+            self._do_save()
+
+    def _do_save(self):
+        try:
+            # Save training intensity setting
+            self._data['train_intensity'] = _ai_train_intensity
+            # Serialize NN weights before saving
+            for sname, nn in self._nn_cache.items():
+                if sname in self._data.get('sites', {}):
+                    self._data['sites'][sname]['nn_weights'] = nn.to_dict()
+            with open(AI_STRATEGY_FILE, 'w', encoding='utf-8') as f:
+                json.dump(self._data, f, ensure_ascii=False)
+            self._dirty = False
+            self._last_save = time.time()
+        except Exception as e:
+            logger.error(f"[AI] Model save error: {e}")
+
+    def force_save(self):
+        if self._dirty:
+            self._do_save()
+
+    # ── Site Data ──
+
+    def _get_site_ai(self, site_name):
+        sites = self._data.setdefault('sites', {})
+        if site_name not in sites:
+            # Initialize with global priors (transfer learning)
+            gp = self._data.get('global_priors', {})
+            thompson_init = {}
+            for strat in STRATEGY_ORDER:
+                prior = gp.get(strat, {'alpha': 1.0, 'beta': 1.0})
+                thompson_init[strat] = {'alpha': prior['alpha'], 'beta': prior['beta']}
+            sites[site_name] = {
+                'hour_matrix': {},
+                'day_matrix': {},
+                'recent': [],
+                'strategy_scores': {},
+                'total_observations': 0,
+                'thompson': thompson_init,
+                'nn_weights': None,
+            }
+        return sites[site_name]
+
+    def _get_nn(self, site_name):
+        """Get or create per-site neural network."""
+        if site_name not in self._nn_cache:
+            ai = self._data.get('sites', {}).get(site_name)
+            if ai and ai.get('nn_weights'):
+                try:
+                    self._nn_cache[site_name] = MiniNN.from_dict(ai['nn_weights'])
+                except Exception:
+                    self._nn_cache[site_name] = MiniNN()
+            else:
+                self._nn_cache[site_name] = MiniNN()
+        return self._nn_cache[site_name]
+
+    # ── Thompson Sampling ──
+
+    @staticmethod
+    def _gamma_sample(shape):
+        """Sample from Gamma(shape, 1) distribution. Pure Python, Marsaglia-Tsang method."""
+        if shape <= 0:
+            return 0.001
+        if shape < 1.0:
+            return AdaptiveStrategyEngine._gamma_sample(shape + 1.0) * (_rng.random() ** (1.0 / shape))
+        d = shape - 1.0 / 3.0
+        c = 1.0 / math.sqrt(9.0 * d)
+        for _ in range(100):  # safety limit
+            while True:
+                x = _rng.gauss(0, 1)
+                v = 1.0 + c * x
+                if v > 0:
+                    break
+            v = v * v * v
+            u = _rng.random()
+            if u < 1.0 - 0.0331 * (x * x) * (x * x):
+                return d * v
+            if math.log(max(u, 1e-300)) < 0.5 * x * x + d * (1.0 - v + math.log(max(v, 1e-300))):
+                return d * v
+        return d  # fallback
+
+    def _thompson_sample(self, ai, strategy):
+        """Sample from Beta(alpha, beta) for this strategy using Thompson Sampling."""
+        ts = ai.setdefault('thompson', {})
+        params = ts.setdefault(strategy, {'alpha': 1.0, 'beta': 1.0})
+        x = self._gamma_sample(params['alpha'])
+        y = self._gamma_sample(params['beta'])
+        return x / (x + y) if (x + y) > 1e-10 else 0.5
+
+    # ── Feature Engineering ──
+
+    def _build_features(self, ai, strategy, hour, day, current_time):
+        """Build 10-element normalized feature vector for neural network."""
+        pi2 = 2.0 * math.pi
+        # Cyclical time encoding
+        hour_sin = math.sin(pi2 * hour / 24.0) * 0.5 + 0.5
+        hour_cos = math.cos(pi2 * hour / 24.0) * 0.5 + 0.5
+        day_sin = math.sin(pi2 * day / 7.0) * 0.5 + 0.5
+        day_cos = math.cos(pi2 * day / 7.0) * 0.5 + 0.5
+
+        # EMA scores
+        ema = ai['strategy_scores'].get(strategy, {})
+        ema_success = ema.get('ema_success', 0.5)
+        ema_latency = ema.get('ema_latency', 500.0)
+        latency_norm = max(0.0, 1.0 - min(ema_latency / 2000.0, 1.0))
+
+        # Temporal score
+        hour_data = ai['hour_matrix'].get(str(hour), {}).get(strategy)
+        temporal = 0.5
+        if hour_data:
+            total = hour_data['ok'] + hour_data['fail']
+            if total >= 2:
+                temporal = hour_data['ok'] / total
+
+        # Recency
+        recency = 0.0
+        for obs in reversed(ai.get('recent', [])):
+            if obs[0] == strategy and obs[1]:
+                age = current_time - obs[5]
+                recency = math.exp(-age / 3600.0)
+                break
+
+        # Observation density
+        strat_obs = sum(1 for obs in ai.get('recent', []) if obs[0] == strategy)
+        obs_norm = min(1.0, strat_obs / 10.0)
+
+        # Streak score
+        streak = 0.5
+        for obs in reversed(ai.get('recent', [])):
+            if obs[0] == strategy:
+                if obs[1]:
+                    streak = min(1.0, streak + 0.1)
+                else:
+                    streak = max(0.0, streak - 0.15)
+
+        return [hour_sin, hour_cos, day_sin, day_cos,
+                ema_success, latency_norm, temporal,
+                recency, obs_norm, streak]
+
+    # ── Concept Drift Detection ──
+
+    def _detect_drift(self, ai):
+        """Compare recent 20 vs previous 20 observations. Returns drift score 0.0-1.0."""
+        recent = ai.get('recent', [])
+        if len(recent) < 40:
+            return 0.0
+        window_new = recent[-20:]
+        window_old = recent[-40:-20]
+        new_ok = sum(1 for obs in window_new if obs[1])
+        old_ok = sum(1 for obs in window_old if obs[1])
+        rate_delta = abs(new_ok / 20.0 - old_ok / 20.0)
+        # Check if winning strategy changed
+        from collections import Counter
+        new_wins = Counter(obs[0] for obs in window_new if obs[1])
+        old_wins = Counter(obs[0] for obs in window_old if obs[1])
+        new_top = new_wins.most_common(1)[0][0] if new_wins else None
+        old_top = old_wins.most_common(1)[0][0] if old_wins else None
+        strat_changed = 1.0 if (new_top and old_top and new_top != old_top) else 0.0
+        return min(1.0, rate_delta * 2.0 + strat_changed * 0.3)
+
+    def _apply_drift_response(self, ai, drift_score):
+        """React to detected concept drift by boosting exploration."""
+        if drift_score < 0.3:
+            return
+        logger.info(f"[AI] Concept drift detected (score={drift_score:.2f}), boosting exploration")
+        decay = max(0.5, 1.0 - drift_score)
+        # Decay temporal matrices
+        for hour_strats in ai.get('hour_matrix', {}).values():
+            for sd in hour_strats.values():
+                sd['ok'] = int(sd['ok'] * decay)
+                sd['fail'] = int(sd['fail'] * decay)
+        for day_strats in ai.get('day_matrix', {}).values():
+            for sd in day_strats.values():
+                sd['ok'] = int(sd['ok'] * decay)
+                sd['fail'] = int(sd['fail'] * decay)
+        # Flatten Thompson priors
+        flatten = max(0.3, 1.0 - drift_score)
+        for params in ai.get('thompson', {}).values():
+            params['alpha'] = max(1.0, params['alpha'] * flatten)
+            params['beta'] = max(1.0, params['beta'] * flatten)
+        # Pull EMA toward neutral
+        for ema in ai.get('strategy_scores', {}).values():
+            ema['ema_success'] = ema['ema_success'] * 0.7 + 0.5 * 0.3
+        ai['_last_drift_time'] = time.time()
+        ai['_drift_score'] = drift_score
+
+    # ── Transfer Learning ──
+
+    def _compute_global_reputation(self):
+        """Aggregate success across all sites to build global Beta priors for new sites."""
+        global_stats = {}
+        for site_ai in self._data.get('sites', {}).values():
+            for obs in site_ai.get('recent', []):
+                gs = global_stats.setdefault(obs[0], {'ok': 0, 'fail': 0})
+                if obs[1]:
+                    gs['ok'] += 1
+                else:
+                    gs['fail'] += 1
+        priors = {}
+        for strat, gs in global_stats.items():
+            priors[strat] = {
+                'alpha': 1.0 + gs['ok'] * 0.1,
+                'beta': 1.0 + gs['fail'] * 0.1,
+            }
+        self._data['global_priors'] = priors
+        return priors
+
+    # ── Core: Record ──
+
+    def record(self, site_name, strategy, success, elapsed_ms):
+        """Record an observation and update all AI models online."""
+        now = datetime.now()
+        hour = str(now.hour)
+        day = str(now.weekday())
+        ai = self._get_site_ai(site_name)
+
+        # 1. Update hour matrix
+        hm = ai['hour_matrix'].setdefault(hour, {})
+        hs = hm.setdefault(strategy, {'ok': 0, 'fail': 0, 'total_ms': 0.0})
+        if success:
+            hs['ok'] += 1
+            hs['total_ms'] += elapsed_ms
+        else:
+            hs['fail'] += 1
+
+        # 2. Update day matrix
+        dm = ai['day_matrix'].setdefault(day, {})
+        ds = dm.setdefault(strategy, {'ok': 0, 'fail': 0})
+        if success:
+            ds['ok'] += 1
+        else:
+            ds['fail'] += 1
+
+        # 3. Update ring buffer (expanded to 100)
+        ai['recent'].append([strategy, success, round(elapsed_ms, 1), int(hour), int(day), time.time()])
+        if len(ai['recent']) > AI_RING_BUFFER_SIZE:
+            ai['recent'] = ai['recent'][-AI_RING_BUFFER_SIZE:]
+
+        # 4. Update EMA
+        ema = ai['strategy_scores'].setdefault(strategy, {'ema_success': 0.5, 'ema_latency': 500.0})
+        alpha = 0.2
+        ema['ema_success'] = ema['ema_success'] * (1 - alpha) + (1.0 if success else 0.0) * alpha
+        ema['ema_latency'] = ema['ema_latency'] * (1 - alpha) + elapsed_ms * alpha
+
+        ai['total_observations'] += 1
+
+        # 5. Thompson Sampling update
+        ts = ai.setdefault('thompson', {})
+        params = ts.setdefault(strategy, {'alpha': 1.0, 'beta': 1.0})
+        if success:
+            params['alpha'] += 1.0
+        else:
+            params['beta'] += 1.0
+        # Periodic decay to prevent unbounded growth
+        if ai['total_observations'] % AI_THOMPSON_DECAY_INTERVAL == 0:
+            for sp in ts.values():
+                sp['alpha'] = max(1.0, sp['alpha'] * AI_DECAY_FACTOR)
+                sp['beta'] = max(1.0, sp['beta'] * AI_DECAY_FACTOR)
+
+        # 6. Strategy group learning: siblings get 20% signal
+        group = STRATEGY_TO_GROUP.get(strategy)
+        if group:
+            siblings = [s for s in STRATEGY_GROUPS[group] if s != strategy]
+            for sib in siblings:
+                sib_params = ts.setdefault(sib, {'alpha': 1.0, 'beta': 1.0})
+                if success:
+                    sib_params['alpha'] += 0.2
+                else:
+                    sib_params['beta'] += 0.2
+
+        # 7. Update global weights
+        gw = self._data['global_weights'].setdefault(strategy, {
+            'w_success': 1.0, 'w_latency': 1.0, 'w_recency': 1.0, 'w_temporal': 1.0
+        })
+        if success:
+            gw['w_success'] = min(3.0, gw['w_success'] + 0.01)
+            if elapsed_ms < 300:
+                gw['w_latency'] = min(3.0, gw['w_latency'] + 0.005)
+        else:
+            gw['w_success'] = max(0.1, gw['w_success'] - 0.02)
+
+        # 8. Neural network online learning (backprop)
+        try:
+            nn = self._get_nn(site_name)
+            features = self._build_features(ai, strategy, int(hour), int(day), time.time())
+            _, cache = nn.forward(features)
+            nn.backward(cache, [1.0 if success else 0.0])
+        except Exception:
+            pass  # NN errors should never block proxy
+
+        self._dirty = True
+        self._save_if_needed()
+
+    # ── Core: Predict ──
+
+    def predict(self, site_name, count_as_prediction=False):
+        """Return strategies sorted by predicted score (best first).
+        Uses Thompson Sampling + Neural Network + linear scoring blend."""
+        ai = self._get_site_ai(site_name)
+        now = datetime.now()
+        hour = now.hour
+        day = now.weekday()
+        current_time = time.time()
+
+        if ai['total_observations'] < AI_MIN_SAMPLES:
+            return None
+
+        # Drift detection (throttled to every 60s)
+        last_drift_check = ai.get('_last_drift_check', 0)
+        if current_time - last_drift_check > AI_DRIFT_CHECK_INTERVAL:
+            ai['_last_drift_check'] = current_time
+            drift = self._detect_drift(ai)
+            if drift > 0.3:
+                self._apply_drift_response(ai, drift)
+
+        scores = []
+        nn = self._get_nn(site_name)
+
+        for strat in STRATEGY_ORDER:
+            # Linear composite score (legacy, always available)
+            linear_score, confidence = self._score_strategy_linear(ai, strat, hour, day, current_time)
+
+            # Neural network score
+            nn_score = 0.5
+            try:
+                features = self._build_features(ai, strat, hour, day, current_time)
+                nn_out, _ = nn.forward(features)
+                nn_score = nn_out[0]
+            except Exception:
+                pass
+
+            # Blend: NN weight increases with more observations
+            blend = min(1.0, ai['total_observations'] / 100.0)
+            base_score = blend * nn_score + (1.0 - blend) * linear_score
+
+            # Thompson Sampling for exploration
+            thompson = self._thompson_sample(ai, strat)
+
+            # Combined: 60% model score + 40% Thompson exploration
+            combined = 0.6 * base_score + 0.4 * thompson
+            scores.append((strat, round(combined, 4), round(confidence, 2)))
+
+        scores.sort(key=lambda x: x[1], reverse=True)
+
+        # Log exploration when Thompson causes non-obvious picks
+        if len(scores) > 1 and count_as_prediction:
+            # Check if Thompson shuffled the top
+            linear_top = max(STRATEGY_ORDER, key=lambda s: self._score_strategy_linear(
+                ai, s, hour, day, current_time)[0])
+            if scores[0][0] != linear_top:
+                logger.debug(f"[AI] Exploring: {scores[0][0]} for {site_name} (Thompson)")
+
+        if count_as_prediction:
+            self._data['total_predictions'] = self._data.get('total_predictions', 0) + 1
+            self._data.setdefault('_last_predictions', {})[site_name] = scores[0][0]
+
+        return scores
+
+    def _score_strategy_linear(self, ai, strategy, hour, day, current_time):
+        """Linear composite scoring (legacy method, used as NN fallback)."""
+        gw = self._data['global_weights'].get(strategy, {
+            'w_success': 1.0, 'w_latency': 1.0, 'w_recency': 1.0, 'w_temporal': 1.0
+        })
+        ema = ai['strategy_scores'].get(strategy, {})
+        ema_success = ema.get('ema_success', 0.5)
+        ema_latency = ema.get('ema_latency', 500.0)
+
+        # Temporal
+        temporal_score = 0.5
+        hour_data = ai['hour_matrix'].get(str(hour), {}).get(strategy)
+        if hour_data:
+            total = hour_data['ok'] + hour_data['fail']
+            if total >= 2:
+                temporal_score = hour_data['ok'] / total
+        day_data = ai['day_matrix'].get(str(day), {}).get(strategy)
+        day_score = 0.5
+        if day_data:
+            total = day_data['ok'] + day_data['fail']
+            if total >= 2:
+                day_score = day_data['ok'] / total
+        temporal_combined = temporal_score * 0.7 + day_score * 0.3
+
+        latency_score = max(0.0, 1.0 - (ema_latency / 2000.0))
+
+        recency_score = 0.0
+        for obs in reversed(ai.get('recent', [])):
+            if obs[0] == strategy and obs[1]:
+                age = current_time - obs[5]
+                recency_score = math.exp(-age / 3600.0)
+                break
+
+        strat_obs = sum(1 for obs in ai.get('recent', []) if obs[0] == strategy)
+        confidence = min(1.0, strat_obs / 10.0)
+
+        score = (
+            gw['w_success']  * ema_success      * 0.35 +
+            gw['w_temporal'] * temporal_combined * 0.30 +
+            gw['w_latency']  * latency_score    * 0.20 +
+            gw['w_recency']  * recency_score    * 0.15
+        )
+        score *= (0.8 + 0.2 * confidence)
+        return round(score, 4), round(confidence, 2)
+
+    # ── Prediction Tracking ──
+
+    def record_prediction_result(self, site_name, winning_strategy):
+        last_preds = self._data.get('_last_predictions', {})
+        predicted = last_preds.get(site_name)
+        if predicted and predicted == winning_strategy:
+            self._data['correct_predictions'] = self._data.get('correct_predictions', 0) + 1
+
+    def get_accuracy(self):
+        total = self._data.get('total_predictions', 0)
+        correct = self._data.get('correct_predictions', 0)
+        if total == 0:
+            return 0.0
+        return round((correct / total) * 100, 1)
+
+    # ── Dashboard Data ──
+
+    def get_site_insights(self, site_name):
+        ai = self._data.get('sites', {}).get(site_name)
+        if not ai or ai['total_observations'] < AI_MIN_SAMPLES:
+            return None
+        predictions = self.predict(site_name)
+        if not predictions:
+            return None
+        top = predictions[0]
+        # Thompson params for top strategy
+        ts = ai.get('thompson', {}).get(top[0], {'alpha': 1, 'beta': 1})
+        insights = {
+            'ai_active': True,
+            'predicted_strategy': top[0],
+            'confidence': top[1],
+            'score': top[2],
+            'total_observations': ai['total_observations'],
+            'top_3': [{'strategy': p[0], 'score': p[1], 'confidence': p[2]} for p in predictions[:3]],
+            'thompson_alpha': round(ts['alpha'], 1),
+            'thompson_beta': round(ts['beta'], 1),
+            'drift_score': round(ai.get('_drift_score', 0.0), 2),
+            'nn_active': site_name in self._nn_cache,
+        }
+        # Hourly heatmap
+        hour_best = {}
+        for h, strats in ai.get('hour_matrix', {}).items():
+            best_strat, best_rate = None, 0
+            for s, data in strats.items():
+                total = data['ok'] + data['fail']
+                if total >= 2:
+                    rate = data['ok'] / total
+                    if rate > best_rate:
+                        best_rate = rate
+                        best_strat = s
+            if best_strat:
+                hour_best[h] = {'strategy': best_strat, 'rate': round(best_rate, 2)}
+        insights['hour_best'] = hour_best
+        return insights
+
+    def get_global_stats(self):
+        total_obs = sum(s.get('total_observations', 0) for s in self._data.get('sites', {}).values())
+        total_success = sum(
+            sum(1 for obs in s.get('recent', []) if obs[1])
+            for s in self._data.get('sites', {}).values()
+        )
+        nn_sites = len(self._nn_cache)
+        drift_active = sum(
+            1 for s in self._data.get('sites', {}).values()
+            if s.get('_drift_score', 0) > 0.3
+        )
+        return {
+            'total_predictions': self._data.get('total_predictions', 0),
+            'correct_predictions': self._data.get('correct_predictions', 0),
+            'accuracy': self.get_accuracy(),
+            'sites_with_data': sum(
+                1 for s in self._data.get('sites', {}).values()
+                if s.get('total_observations', 0) >= AI_MIN_SAMPLES
+            ),
+            'total_observations': total_obs,
+            'total_success': total_success,
+            'success_rate': round((total_success / total_obs * 100), 1) if total_obs > 0 else 0,
+            'global_weights': self._data.get('global_weights', {}),
+            'nn_active_sites': nn_sites,
+            'drift_active': drift_active,
+            'engine_version': 3,
+        }
+
+    def reset(self):
+        self._data = self._default_data()
+        self._nn_cache.clear()
+        self._dirty = True
+        self._do_save()
+        logger.info("[AI v3] Model reset")
+
+
+_ai_engine = AdaptiveStrategyEngine()
+
+# ==================== AI TRAINING ENGINE ====================
+
+async def _probe_strategy(test_ip, test_domain, strat_name):
+    """Single strategy probe: verified TLS handshake with cert and hostname validation."""
+    result = await _verify_tls_strategy(test_ip, test_domain, strat_name, timeout=8)
+    return result['ok'], result['elapsed_ms'] if result['ok'] else 0
+
+async def _self_training_loop():
+    """Background task: periodically probe underexplored strategies for all sites."""
+    global _ai_train_intensity
+    # Nonstop mode starts faster, others wait 5 minutes
+    init_wait = 60 if _ai_train_intensity == 'nonstop' else 300
+    await asyncio.sleep(init_wait)
+    while _running:
+        try:
+            profile = AI_TRAIN_PROFILES.get(_ai_train_intensity, AI_TRAIN_PROFILES['light'])
+            await asyncio.sleep(profile['interval'])
+            if _training_state.get('active'):
+                continue
+            max_probes = profile['probes']
+            # Recompute global reputation for transfer learning
+            _ai_engine._compute_global_reputation()
+            _self_train_state['running'] = True
+            _self_train_state['cycle_count'] += 1
+            _self_train_state['last_run'] = time.time()
+            logger.info(f"[SELF-TRAIN] Cycle #{_self_train_state['cycle_count']} ({_ai_train_intensity} mode, {max_probes} probes, every {profile['interval']}s)")
+            for site_name, site_cfg in _config.get('sites', {}).items():
+                if not site_cfg.get('enabled', True) or not _running:
+                    continue
+                ai = _ai_engine._get_site_ai(site_name)
+                # Nonstop/heavy modes train even with fewer observations
+                min_obs = AI_MIN_SAMPLES if _ai_train_intensity in ('light', 'medium') else 1
+                if ai['total_observations'] < min_obs:
+                    continue
+                # Find underexplored strategies
+                obs_counts = {}
+                for obs in ai.get('recent', []):
+                    obs_counts[obs[0]] = obs_counts.get(obs[0], 0) + 1
+                # Higher intensity = higher threshold for "explored"
+                explore_threshold = 3 if _ai_train_intensity == 'light' else (5 if _ai_train_intensity == 'medium' else 10)
+                underexplored = [s for s in STRATEGY_ORDER if obs_counts.get(s, 0) < explore_threshold]
+                if not underexplored:
+                    # In nonstop mode, re-test all strategies even if explored
+                    if _ai_train_intensity == 'nonstop':
+                        underexplored = list(STRATEGY_ORDER)
+                    else:
+                        continue
+                to_test = _rng.sample(underexplored, min(max_probes, len(underexplored)))
+                # Get test IP
+                domains = site_cfg.get('dns_resolve', site_cfg.get('domains', []))
+                test_domain = domains[0] if domains else f"{site_name}.com"
+                test_ip = get_bypass_ip(test_domain)
+                if not test_ip or test_ip == test_domain.lower():
+                    continue
+                _self_train_state['last_site'] = site_name
+                logger.info(f"[SELF-TRAIN] {site_name}: probing {[s[:12] for s in to_test]}")
+                for strat_name in to_test:
+                    if not _running:
+                        break
+                    _self_train_state['last_strategy'] = strat_name
+                    probe = await _verify_tls_strategy(test_ip, test_domain, strat_name, timeout=8)
+                    success, elapsed_ms = probe['ok'], probe['elapsed_ms']
+                    _ai_engine.record(site_name, strat_name, success, elapsed_ms)
+                    _self_train_state['total_probes'] += 1
+                    if success:
+                        _strategy_cache.record_success(site_name, strat_name, elapsed_ms)
+                        _self_train_state['last_result'] = f"{strat_name} OK ({elapsed_ms}ms)"
+                        logger.info(f"[SELF-TRAIN] {site_name}: {strat_name} ✓ ({elapsed_ms}ms)")
+                    else:
+                        _strategy_cache.record_failure(site_name, strat_name)
+                        _self_train_state['last_result'] = f"{strat_name} FAIL ({probe['reason']})"
+                        logger.info(f"[SELF-TRAIN] {site_name}: {strat_name} failed ({probe['reason']}: {probe['detail']})")
+                        logger.info(f"[SELF-TRAIN] {site_name}: {strat_name} ✗")
+                    await asyncio.sleep(0.5 if _ai_train_intensity == 'nonstop' else 1.0)
+            _self_train_state['running'] = False
+        except Exception as e:
+            _self_train_state['running'] = False
+            logger.info(f"[SELF-TRAIN] Error: {e}")
+
+async def _train_site(site_name):
+    """Test all strategies for a single site via real TLS handshake. Does not affect live traffic."""
+    site_cfg = _config.get('sites', {}).get(site_name)
+    if not site_cfg:
+        return
+    domains = site_cfg.get('dns_resolve', site_cfg.get('domains', []))
+    test_domain = domains[0] if domains else f"{site_name}.com"
+
+    # Get an IP to connect to
+    test_ip = get_bypass_ip(test_domain)
+    if not test_ip or test_ip == test_domain.lower():
+        loop = asyncio.get_event_loop()
+        try:
+            ips = await loop.run_in_executor(None, _resolve_domain_doh, test_domain)
+            if ips:
+                test_ip = ips[0]
+            else:
+                logger.warning(f"[TRAIN] {site_name}: no IPs found for {test_domain}")
+                return
+        except Exception:
+            return
+
+    strat_list = list(STRATEGY_FUNCS.keys())
+    total = len(strat_list)
+    results = []
+
+    _training_state['progress'][site_name] = {
+        'current_strat': '', 'tested': 0, 'total': total, 'pct': 0
+    }
+
+    for idx, strat_name in enumerate(strat_list):
+        if not _training_state['active']:
+            break  # Training was cancelled
+
+        _training_state['progress'][site_name]['current_strat'] = strat_name
+        _training_state['progress'][site_name]['tested'] = idx
+        _training_state['progress'][site_name]['pct'] = int((idx / total) * 100)
+
+        probe = await _verify_tls_strategy(test_ip, test_domain, strat_name, timeout=8)
+        success = probe['ok']
+        elapsed_ms = probe['elapsed_ms']
+
+        results.append({
+            'strategy': strat_name,
+            'success': success,
+            'ms': elapsed_ms if success else 0,
+            'reason': None if success else probe['reason']
+        })
+
+        if success:
+            logger.info(f"[TRAIN] {site_name}: {strat_name} ✓ ({elapsed_ms}ms)")
+        else:
+            logger.debug(f"[TRAIN] {site_name}: {strat_name} ✗")
+
+        # Small delay between tests to not overwhelm server/DPI
+        await asyncio.sleep(0.5)
+
+    # Update progress to 100%
+    _training_state['progress'][site_name] = {
+        'current_strat': 'done', 'tested': total, 'total': total, 'pct': 100
+    }
+
+    # Find best strategy
+    successful = [r for r in results if r['success']]
+    if successful:
+        best = min(successful, key=lambda r: r['ms'])
+        _training_state['results'][site_name] = {
+            'best_strategy': best['strategy'],
+            'best_ms': best['ms'],
+            'success_count': len(successful),
+            'total_tested': total,
+            'all_results': results
+        }
+        logger.info(f"[TRAIN] {site_name}: best = {best['strategy']} ({best['ms']}ms), "
+                     f"{len(successful)}/{total} strategies worked")
+    else:
+        _training_state['results'][site_name] = {
+            'best_strategy': None,
+            'best_ms': 0,
+            'success_count': 0,
+            'total_tested': total,
+            'all_results': results
+        }
+        logger.warning(f"[TRAIN] {site_name}: no strategies succeeded")
+
+
+def _build_client_hello(hostname):
+    """Build a minimal TLS 1.2 ClientHello with SNI for training tests."""
+    host_bytes = hostname.encode('ascii')
+    # SNI extension
+    sni_ext = (
+        b'\x00\x00'  # Extension type: server_name
+        + (len(host_bytes) + 5).to_bytes(2, 'big')  # Extension length
+        + (len(host_bytes) + 3).to_bytes(2, 'big')  # Server Name List length
+        + b'\x00'  # Host name type
+        + len(host_bytes).to_bytes(2, 'big')  # Host name length
+        + host_bytes
+    )
+    # Supported versions extension (TLS 1.2, 1.3)
+    sv_ext = b'\x00\x2b\x00\x03\x02\x03\x03'
+    extensions = sni_ext + sv_ext
+    # Cipher suites (common ones)
+    ciphers = (
+        b'\x13\x01\x13\x02\x13\x03'  # TLS 1.3
+        b'\xc0\x2c\xc0\x2b\xc0\x30\xc0\x2f'  # ECDHE
+        b'\x00\x9e\x00\x9f\x00\x67\x00\x6b'  # DHE
+        b'\x00\xff'  # Renegotiation info
+    )
+    client_random = random.randbytes(32) if hasattr(random, 'randbytes') else bytes(random.getrandbits(8) for _ in range(32))
+    # Handshake body
+    body = (
+        b'\x03\x03'  # Client version TLS 1.2
+        + client_random  # Random
+        + b'\x00'  # Session ID length = 0
+        + len(ciphers).to_bytes(2, 'big') + ciphers
+        + b'\x01\x00'  # Compression methods: null
+        + len(extensions).to_bytes(2, 'big') + extensions
+    )
+    # Handshake message
+    handshake = b'\x01' + len(body).to_bytes(3, 'big') + body
+    # TLS record
+    record = b'\x16\x03\x01' + len(handshake).to_bytes(2, 'big') + handshake
+    return record
+
+
+async def _train_all_sites():
+    """Run strategy training for all enabled sites."""
+    global _training_state
+    _training_state['active'] = True
+    _training_state['completed'] = False
+    _training_state['progress'] = {}
+    _training_state['results'] = {}
+    logger.info("[TRAIN] Strategy training started for all sites")
+
+    enabled_sites = [
+        name for name, cfg in _config.get('sites', {}).items()
+        if cfg.get('enabled', True)
+    ]
+
+    for site_name in enabled_sites:
+        if not _training_state['active']:
+            break
+        await _train_site(site_name)
+
+    _training_state['active'] = False
+    _training_state['completed'] = True
+    logger.info(f"[TRAIN] Training complete. Results for {len(_training_state['results'])} sites.")
+
+
+def _apply_training(site_name):
+    """Feed training results into the AI engine so it naturally learns the best strategy."""
+    result = _training_state['results'].get(site_name)
+    if not result or not result.get('all_results'):
+        return False
+
+    # Save current AI data snapshot for revert
+    ai_data = _ai_engine._data.get('sites', {}).get(site_name)
+    if ai_data:
+        import copy
+        _training_state['previous_strategies'][site_name] = copy.deepcopy(ai_data)
+    else:
+        _training_state['previous_strategies'][site_name] = None
+
+    # Reset AI data for this site so training results have full weight
+    if site_name in _ai_engine._data.get('sites', {}):
+        del _ai_engine._data['sites'][site_name]
+
+    # Also reset strategy cache for this site
+    if site_name in _strategy_cache._data.get('sites', {}):
+        del _strategy_cache._data['sites'][site_name]
+        _strategy_cache._dirty = True
+
+    # Inject all training results as observations into the AI engine
+    for r in result['all_results']:
+        if r['success']:
+            # Record successful strategies multiple times for stronger signal
+            for _ in range(5):
+                _ai_engine.record(site_name, r['strategy'], True, r['ms'])
+                _strategy_cache.record_success(site_name, r['strategy'], r['ms'])
+        else:
+            _ai_engine.record(site_name, r['strategy'], False, 0)
+            _strategy_cache.record_failure(site_name, r['strategy'])
+
+    _ai_engine._dirty = True
+    _ai_engine._do_save()
+    _strategy_cache._do_save()
+
+    best = result.get('best_strategy', '?')
+    logger.info(f"[TRAIN] Fed {len(result['all_results'])} training results into AI for {site_name}. "
+                 f"AI should now prefer '{best}'")
+    return True
+
+
+def _revert_training(site_name):
+    """Revert AI data to pre-training state."""
+    old_ai_data = _training_state['previous_strategies'].get(site_name)
+    if old_ai_data is None and site_name not in _training_state['previous_strategies']:
+        return False
+
+    # Restore old AI data
+    if old_ai_data is not None:
+        _ai_engine._data.setdefault('sites', {})[site_name] = old_ai_data
+    else:
+        _ai_engine._data.get('sites', {}).pop(site_name, None)
+
+    _ai_engine._dirty = True
+    _ai_engine._do_save()
+
+    # Reset strategy cache for fresh start
+    if site_name in _strategy_cache._data.get('sites', {}):
+        del _strategy_cache._data['sites'][site_name]
+        _strategy_cache._dirty = True
+        _strategy_cache._do_save()
+
+    del _training_state['previous_strategies'][site_name]
+    logger.info(f"[TRAIN] Reverted AI data for {site_name} to pre-training state")
+    return True
 
 # ==================== PROXY ====================
 
@@ -1322,20 +2925,33 @@ async def handle_proxy_client(reader, writer):
                 if ips_tried >= max_ips_per_pool:
                     break
                 ips_tried += 1
-                remaining_ips = [ip for ip in ip_pool if ip != try_ip]
                 for strat_name in strategies:
                     _stats['strategy_tries'] += 1
-                    s_reader, s_writer = await _try_connect(try_ip, target_port, remaining_ips)
-                    if not s_writer:
-                        break
+                    probe = await _verify_tls_strategy(try_ip, target_host, strat_name, port=target_port, timeout=STRATEGY_SUCCESS_TIMEOUT)
+                    if not probe['ok']:
+                        logger.info(f"[STRATEGY] {site_name}: {strat_name} failed ({probe['reason']}: {probe['detail']}) IP:{try_ip}")
+                        _strategy_cache.record_failure(site_name, strat_name)
+                        _ai_engine.record(site_name, strat_name, False, 0)
+                        _strategy_history.append({'time': datetime.now().strftime('%H:%M:%S'), 'site': site_name, 'strategy': strat_name, 'ms': 0, 'success': False})
+                        _stats['strategy_fallbacks'] += 1
+                        continue
 
-                    start_t = time.perf_counter()
+                    s_reader, s_writer = await _try_connect(try_ip, target_port, timeout=8)
+                    if not s_writer:
+                        logger.info(f"[STRATEGY] {site_name}: {strat_name} failed (connection_failed: could not open tunnel) IP:{try_ip}")
+                        _strategy_cache.record_failure(site_name, strat_name)
+                        _ai_engine.record(site_name, strat_name, False, 0)
+                        _strategy_history.append({'time': datetime.now().strftime('%H:%M:%S'), 'site': site_name, 'strategy': strat_name, 'ms': 0, 'success': False})
+                        _stats['strategy_fallbacks'] += 1
+                        continue
+
                     try:
                         await STRATEGY_FUNCS[strat_name](s_writer, first_chunk)
                     except Exception as e:
                         logger.info(f"[STRATEGY] {site_name}: {strat_name} failed ({e}) IP:{try_ip}")
                         _close_writer(s_writer)
                         _strategy_cache.record_failure(site_name, strat_name)
+                        _ai_engine.record(site_name, strat_name, False, 0)
                         _strategy_history.append({'time': datetime.now().strftime('%H:%M:%S'), 'site': site_name, 'strategy': strat_name, 'ms': 0, 'success': False})
                         _stats['strategy_fallbacks'] += 1
                         continue
@@ -1352,14 +2968,17 @@ async def handle_proxy_client(reader, writer):
                         logger.info(f"[STRATEGY] {site_name}: {strat_name} failed ({e}) IP:{try_ip}")
                         _close_writer(s_writer)
                         _strategy_cache.record_failure(site_name, strat_name)
+                        _ai_engine.record(site_name, strat_name, False, 0)
                         _strategy_history.append({'time': datetime.now().strftime('%H:%M:%S'), 'site': site_name, 'strategy': strat_name, 'ms': 0, 'success': False})
                         _stats['strategy_fallbacks'] += 1
                         continue
 
                     # Success - at least one connection worked
                     all_conn_failed = False
-                    elapsed_ms = (time.perf_counter() - start_t) * 1000
+                    elapsed_ms = probe['elapsed_ms']
                     _strategy_cache.record_success(site_name, strat_name, elapsed_ms)
+                    _ai_engine.record(site_name, strat_name, True, elapsed_ms)
+                    _ai_engine.record_prediction_result(site_name, strat_name)
                     _strategy_history.append({'time': datetime.now().strftime('%H:%M:%S'), 'site': site_name, 'strategy': strat_name, 'ms': round(elapsed_ms), 'success': True})
                     if site_name in _site_stats:
                         _site_stats[site_name]['successes'] += 1
@@ -1381,16 +3000,21 @@ async def handle_proxy_client(reader, writer):
         if connect_host != target_host:
             logger.info(f"[FALLBACK] {target_host} trying via hostname...")
             for fallback_strat in ['direct', 'tls_record_frag', 'fragment_burst', 'desync']:
+                probe = await _verify_tls_strategy(target_host, target_host, fallback_strat, port=target_port, timeout=8)
+                if not probe['ok']:
+                    logger.info(f"[FALLBACK] {target_host}: {fallback_strat} failed ({probe['reason']}: {probe['detail']})")
+                    continue
                 s_reader_h, s_writer_h = await _try_connect(target_host, target_port, timeout=8)
                 if not s_writer_h:
-                    break
-                start_t = time.perf_counter()
+                    logger.info(f"[FALLBACK] {target_host}: {fallback_strat} failed (connection_failed: could not open tunnel)")
+                    continue
                 try:
                     await STRATEGY_FUNCS[fallback_strat](s_writer_h, first_chunk)
                     server_reply = await asyncio.wait_for(s_reader_h.read(8192), timeout=8)
                     if server_reply and len(server_reply) >= 1 and server_reply[0] == 0x16:
-                        elapsed_ms = (time.perf_counter() - start_t) * 1000
+                        elapsed_ms = probe['elapsed_ms']
                         _strategy_cache.record_success(site_name, fallback_strat, elapsed_ms)
+                        _ai_engine.record(site_name, fallback_strat, True, elapsed_ms)
                         _strategy_history.append({'time': datetime.now().strftime('%H:%M:%S'), 'site': site_name, 'strategy': fallback_strat, 'ms': round(elapsed_ms), 'success': True})
                         logger.info(f"[FALLBACK] {target_host}: {fallback_strat} success ({elapsed_ms:.0f}ms)")
                         writer.write(server_reply)
@@ -1431,7 +3055,7 @@ DASHBOARD_HTML = r"""<!DOCTYPE html>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap');
 *{margin:0;padding:0;box-sizing:border-box}
-:root{--bg:#0a0b10;--surface:#12141d;--surface2:#181b27;--surface3:#1e2235;--border:#252940;--border2:#2d3250;--accent:#6c8aec;--accent2:#8ba3f5;--accent-glow:#6c8aec25;--green:#3dd68c;--red:#f05858;--orange:#f0a030;--cyan:#38c8d8;--purple:#a855f7;--pink:#ec4899;--text:#d0d5e8;--text2:#8890a8;--text3:#585e78;--mono:'JetBrains Mono',Consolas,monospace;--sans:'Inter','Segoe UI',system-ui,sans-serif}
+:root{--bg:#0b0d14;--surface:#111420;--surface2:#171b2d;--surface3:#1e2235;--border:#252940;--border2:#2d3250;--accent:#818cf8;--accent2:#6366f1;--accent-glow:#818cf825;--green:#34d399;--red:#f87171;--orange:#fbbf24;--cyan:#22d3ee;--purple:#a78bfa;--pink:#ec4899;--text:#d0d5e8;--text2:#8890a8;--text3:#585e78;--mono:'JetBrains Mono',Consolas,monospace;--sans:'Inter','Segoe UI',system-ui,sans-serif}
 body{background:var(--bg);color:var(--text);font-family:var(--sans);min-height:100vh;-webkit-font-smoothing:antialiased}
 ::-webkit-scrollbar{width:5px;height:5px}
 ::-webkit-scrollbar-track{background:transparent}
@@ -1515,26 +3139,48 @@ canvas{width:100%;height:100%}
 .toggle input:checked+.slider{background:var(--accent);border-color:var(--accent)}
 .toggle input:checked+.slider::before{transform:translateX(16px);background:#fff}
 .sec-title{font-size:11px;color:var(--text3);font-weight:600;margin-bottom:8px;text-transform:uppercase;letter-spacing:1px}
+.tab-nav{display:flex;gap:2px;padding:0 24px;background:var(--surface);border-bottom:1px solid var(--border);overflow-x:auto;-webkit-overflow-scrolling:touch}
+.tab-nav::-webkit-scrollbar{height:0}
+.tab-btn{background:none;border:none;color:var(--text3);padding:12px 18px;font-size:12px;font-weight:600;cursor:pointer;font-family:var(--sans);position:relative;white-space:nowrap;transition:color .2s}
+.tab-btn:hover{color:var(--text)}
+.tab-btn.active{color:var(--accent)}
+.tab-btn.active::after{content:'';position:absolute;bottom:0;left:8px;right:8px;height:2px;background:var(--accent);border-radius:2px 2px 0 0;box-shadow:0 0 8px var(--accent-glow)}
+.tab-content{display:none;animation:tabFade .25s ease}
+.tab-content.active{display:block}
+@keyframes tabFade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+.card{background:linear-gradient(135deg,var(--surface) 0%,rgba(23,27,45,.8) 100%);border-radius:14px;padding:20px;border:1px solid var(--border);transition:border-color .3s,box-shadow .3s;backdrop-filter:blur(8px)}
+.info-text{font-size:10px;color:var(--text3);margin-top:-10px;margin-bottom:12px;line-height:1.4;font-style:italic}
 </style></head><body>
 <div class="hdr">
-  <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="url(#hg)" stroke-width="2"/><path d="M12 8v4l3.5 2" stroke="url(#hg)" stroke-width="2" stroke-linecap="round"/><defs><linearGradient id="hg" x1="3" y1="2" x2="21" y2="22"><stop stop-color="#6c8aec"/><stop offset="1" stop-color="#a855f7"/></linearGradient></defs></svg>
-  <h1>CleanNet</h1><span class="tag">v1.0</span>
+  <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="url(#hg)" stroke-width="2"/><path d="M12 8v4l3.5 2" stroke="url(#hg)" stroke-width="2" stroke-linecap="round"/><defs><linearGradient id="hg" x1="3" y1="2" x2="21" y2="22"><stop stop-color="#818cf8"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs></svg>
+  <h1>CleanNet</h1><span class="tag">v1.1.0</span>
   <div class="lang">
     <button onclick="setLang('en')" id="lb_en">EN</button>
     <button onclick="setLang('tr')" id="lb_tr">TR</button>
     <button onclick="setLang('de')" id="lb_de">DE</button>
   </div>
 </div>
+<nav class="tab-nav">
+  <button class="tab-btn active" onclick="switchTab('overview')" data-tab="overview" data-i="tab_overview">Overview</button>
+  <button class="tab-btn" onclick="switchTab('sites')" data-tab="sites" data-i="tab_sites">Sites</button>
+  <button class="tab-btn" onclick="switchTab('ai')" data-tab="ai" data-i="tab_ai">AI Engine</button>
+  <button class="tab-btn" onclick="switchTab('settings')" data-tab="settings" data-i="tab_settings">Settings</button>
+  <button class="tab-btn" onclick="switchTab('logs')" data-tab="logs" data-i="tab_logs">Logs</button>
+</nav>
+
+<!-- TAB 1: OVERVIEW -->
+<div class="tab-content active" id="tab-overview">
 <div class="grid">
   <div class="card">
     <h2 data-i="status">Status</h2>
+    <p class="info-text" data-i="info_status">Current proxy status and connection health</p>
     <div class="row"><span data-i="status">Status</span><span id="st" class="badge b-running">Active</span></div>
     <div class="row"><span>Ping</span><span class="v" id="pg">--</span></div>
     <div class="row"><span>Uptime</span><span class="v" id="up">0s</span></div>
-    <div class="row"><span data-i="autostart">Auto-start</span><span class="v"><label class="toggle"><input type="checkbox" id="as" onchange="toggleAS()"><span class="slider"></span></label></span></div>
   </div>
   <div class="card">
     <h2 data-i="statistics">Statistics</h2>
+    <p class="info-text" data-i="info_stats">Connection and bypass statistics since startup</p>
     <div class="row"><span data-i="connections">Connections</span><span class="v" id="cn">0</span></div>
     <div class="row"><span data-i="tls_fragment">TLS Fragment</span><span class="v" id="fg">0</span></div>
     <div class="row"><span data-i="ip_updates">IP Updates</span><span class="v" id="iu">0</span></div>
@@ -1547,13 +3193,26 @@ canvas{width:100%;height:100%}
   </div>
   <div class="card">
     <h2 data-i="ip_pool">IP Pool</h2>
+    <p class="info-text" data-i="info_ip_pool">Resolved IP addresses for bypass targets</p>
     <div id="il" class="ips"></div>
-    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;">
       <button class="btn btn-sm btn-ghost" onclick="fetch('/api/refresh-ips',{method:'POST'})" data-i="refresh_ips">Refresh IPs</button>
       <button class="btn btn-sm btn-green" onclick="fetch('/api/reload-config',{method:'POST'})" data-i="reload_config">Reload Config</button>
       <button class="btn btn-sm btn-red" onclick="fetch('/api/reset-strategies',{method:'POST'})" data-i="reset_strategies">Reset Strategies</button>
     </div>
   </div>
+  <div class="card full">
+    <h2 data-i="strategy_timeline">Strategy Timeline</h2>
+    <p class="info-text" data-i="info_timeline">Recent bypass strategy results and timing</p>
+    <div class="chart-wrap" style="height:140px;"><canvas id="stch"></canvas></div>
+    <div id="stl" style="margin-top:10px;font-family:var(--mono);font-size:11px;max-height:120px;overflow-y:auto;"></div>
+  </div>
+</div>
+</div>
+
+<!-- TAB 2: SITES -->
+<div class="tab-content" id="tab-sites">
+<div class="grid">
   <div class="card full">
     <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
       <span data-i="sites">Sites</span>
@@ -1562,6 +3221,7 @@ canvas{width:100%;height:100%}
         <button class="btn btn-sm btn-red" onclick="removeAllSites()" data-i="remove_all_sites">Remove All</button>
       </div>
     </h2>
+    <p class="info-text" data-i="info_sites">Managed sites with bypass strategies. Add domains to route through proxy.</p>
     <div id="sl" style="margin-bottom:14px;"></div>
     <div style="display:flex;gap:8px;margin-bottom:8px;">
       <input type="text" id="ns" class="inp" placeholder="example.com" style="flex:1;" onkeydown="if(event.key==='Enter')resolveS()">
@@ -1571,6 +3231,7 @@ canvas{width:100%;height:100%}
   </div>
   <div class="card full">
     <h2><span data-i="cdn_finder">CDN Finder</span></h2>
+    <p class="info-text" data-i="info_cdn">Find and add CDN subdomains used by your sites for complete bypass coverage.</p>
     <div class="cdn-help">
       <p id="cdnDesc" style="margin-bottom:6px;font-size:11px;line-height:1.5;color:var(--text2)"></p>
       <div class="cdn-snippet" id="cdnSnippet"></div>
@@ -1584,8 +3245,115 @@ canvas{width:100%;height:100%}
     <div id="cdnResult" style="display:none;"></div>
     <div id="siteDomains" style="margin-top:10px;"></div>
   </div>
+</div>
+</div>
+
+<!-- TAB 3: AI ENGINE -->
+<div class="tab-content" id="tab-ai">
+<div class="grid">
+  <div class="card full">
+    <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+      <span data-i="ai_engine">AI Strategy Engine</span>
+      <div style="display:flex;gap:6px;align-items:center;">
+        <span id="ai_status" class="badge b-stopped" style="font-size:9px;">Learning</span>
+        <button class="btn btn-sm" onclick="startTraining()" id="trainBtn" style="background:linear-gradient(135deg,var(--purple),var(--accent));" data-i="train_ai">&#129504; Train AI</button>
+        <button class="btn btn-sm btn-ghost" onclick="fetch('/api/ai-reset',{method:'POST'})" data-i="ai_reset">Reset AI</button>
+      </div>
+    </h2>
+    <p class="info-text" data-i="info_ai">Machine learning engine that learns optimal bypass strategies per site and time.</p>
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px;">
+      <div style="background:var(--surface2);border-radius:10px;padding:14px;text-align:center;">
+        <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;" data-i="ai_accuracy">Accuracy</div>
+        <div id="ai_acc" style="font-size:28px;font-weight:700;font-family:var(--mono);color:var(--green);">--%</div>
+      </div>
+      <div style="background:var(--surface2);border-radius:10px;padding:14px;text-align:center;">
+        <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;" data-i="ai_predictions">Predictions</div>
+        <div id="ai_pred" style="font-size:28px;font-weight:700;font-family:var(--mono);color:var(--accent);">0</div>
+      </div>
+      <div style="background:var(--surface2);border-radius:10px;padding:14px;text-align:center;">
+        <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;" data-i="ai_observations">Observations</div>
+        <div id="ai_obs" style="font-size:28px;font-weight:700;font-family:var(--mono);color:var(--cyan);">0</div>
+      </div>
+      <div style="background:var(--surface2);border-radius:10px;padding:14px;text-align:center;">
+        <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px;" data-i="ai_active_sites">AI Sites</div>
+        <div id="ai_sites" style="font-size:28px;font-weight:700;font-family:var(--mono);color:var(--purple);">0</div>
+      </div>
+    </div>
+    <div id="ai_detail" style="font-family:var(--mono);font-size:11px;max-height:200px;overflow-y:auto;"></div>
+    <div style="margin-top:12px;">
+      <div style="font-size:9px;color:var(--text3);text-transform:uppercase;letter-spacing:1px;margin-bottom:8px;" data-i="ai_hourly">Hourly Pattern Heatmap</div>
+      <div class="chart-wrap" style="height:80px;"><canvas id="ai_heatmap"></canvas></div>
+    </div>
+    <div style="margin-top:16px;border-top:1px solid var(--border);padding-top:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px;">
+        <div>
+          <div style="font-size:11px;color:var(--text2);font-weight:600;" data-i="training_intensity">Training Intensity</div>
+          <div id="intensityDesc" style="font-size:10px;color:var(--text3);margin-top:4px;"></div>
+        </div>
+        <div id="selfTrainStatus" style="display:flex;align-items:center;gap:6px;font-size:10px;color:var(--text3);">
+          <span id="selfTrainDot" style="width:8px;height:8px;border-radius:50%;background:var(--text3);display:inline-block;"></span>
+          <span id="selfTrainText">Idle</span>
+        </div>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:8px;">
+        <button class="btn btn-sm intensity-btn" data-intensity="light" onclick="setTrainIntensity('light')" style="border:1px solid var(--border);background:transparent;transition:all .2s;">
+          <span data-i="intensity_light">Light</span>
+        </button>
+        <button class="btn btn-sm intensity-btn" data-intensity="medium" onclick="setTrainIntensity('medium')" style="border:1px solid var(--border);background:transparent;transition:all .2s;">
+          <span data-i="intensity_medium">Medium</span>
+        </button>
+        <button class="btn btn-sm intensity-btn" data-intensity="heavy" onclick="setTrainIntensity('heavy')" style="border:1px solid var(--border);background:transparent;transition:all .2s;">
+          <span data-i="intensity_heavy">Heavy</span>
+        </button>
+        <button class="btn btn-sm intensity-btn" data-intensity="nonstop" onclick="setTrainIntensity('nonstop')" style="border:1px solid var(--border);background:transparent;transition:all .2s;">
+          <span data-i="intensity_nonstop">Nonstop 24/7</span>
+        </button>
+      </div>
+      <div id="selfTrainInfo" style="display:none;background:var(--surface2);border-radius:8px;padding:10px 12px;margin-top:8px;font-family:var(--mono);font-size:10px;">
+        <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;">
+          <span><span style="color:var(--text3);">Probes:</span> <span id="stProbes" style="color:var(--cyan);">0</span></span>
+          <span><span style="color:var(--text3);">Cycles:</span> <span id="stCycles" style="color:var(--accent);">0</span></span>
+          <span><span style="color:var(--text3);">Last:</span> <span id="stLast" style="color:var(--green);">-</span></span>
+        </div>
+      </div>
+      <div id="intensityWarning" style="display:none;font-size:10px;color:var(--orange);background:rgba(251,191,36,0.08);border:1px solid rgba(251,191,36,0.2);border-radius:6px;padding:8px 10px;margin-top:6px;" data-i="intensity_warning">
+        Nonstop mode makes continuous background connections to test strategies. This may increase network activity significantly.
+      </div>
+    </div>
+    <div id="trainPanel" style="display:none;margin-top:16px;border-top:1px solid var(--border);padding-top:14px;">
+      <div style="font-size:11px;color:var(--text2);font-weight:600;margin-bottom:10px;" data-i="training_results">Training Results</div>
+      <div id="trainProgress" style="margin-bottom:10px;"></div>
+      <div id="trainResults"></div>
+    </div>
+  </div>
+</div>
+</div>
+
+<!-- TAB 4: SETTINGS -->
+<div class="tab-content" id="tab-settings">
+<div class="grid">
   <div class="card">
+    <h2 data-i="general_settings">General</h2>
+    <p class="info-text" data-i="info_general">Core proxy settings and startup behavior</p>
+    <div class="row"><span data-i="autostart">Auto-start</span><span class="v"><label class="toggle"><input type="checkbox" id="as" onchange="toggleAS()"><span class="slider"></span></label></span></div>
+  </div>
+  <div class="card">
+    <h2 data-i="config_mgmt">Config Management</h2>
+    <p class="info-text" data-i="info_config">Export, import configuration and fix UWP apps</p>
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <button class="btn btn-ghost" onclick="exportCfg()" data-i="export_config">Export Config</button>
+      <label class="btn btn-ghost" style="text-align:center;cursor:pointer;" data-i="import_config">Import Config
+        <input type="file" accept=".json" onchange="importCfg(event)" style="display:none;">
+      </label>
+      <div style="border-top:1px solid var(--border);padding-top:10px;margin-top:4px;">
+        <div style="font-size:10px;color:var(--text3);margin-bottom:6px;" data-i="uwp_desc">Microsoft Store / UWP apps not working?</div>
+        <button class="btn btn-ghost" onclick="fixUwp()" id="uwpBtn" data-i="fix_uwp">Fix UWP Loopback</button>
+      </div>
+    </div>
+  </div>
+  <div class="card full">
     <h2 data-i="proxy_bypass">Proxy Bypass (Exclude)</h2>
+    <p class="info-text" data-i="info_bypass">Domains that bypass the proxy and connect directly</p>
     <div id="bl" class="ips" style="margin-bottom:14px;"></div>
     <div style="display:flex;gap:8px;margin-bottom:8px;">
       <input type="text" id="nb" class="inp" placeholder="*.example.com" style="flex:1;">
@@ -1602,20 +3370,12 @@ canvas{width:100%;height:100%}
       <button class="btn btn-sm btn-red" onclick="clearBypass()" data-i="clear_all">Clear All</button>
     </div>
   </div>
-  <div class="card">
-    <h2 data-i="config_mgmt">Config Management</h2>
-    <div style="display:flex;flex-direction:column;gap:10px;">
-      <button class="btn btn-ghost" onclick="exportCfg()" data-i="export_config">Export Config</button>
-      <label class="btn btn-ghost" style="text-align:center;cursor:pointer;" data-i="import_config">Import Config
-        <input type="file" accept=".json" onchange="importCfg(event)" style="display:none;">
-      </label>
-    </div>
-  </div>
-  <div class="card full">
-    <h2 data-i="strategy_timeline">Strategy Timeline</h2>
-    <div class="chart-wrap" style="height:140px;"><canvas id="stch"></canvas></div>
-    <div id="stl" style="margin-top:10px;font-family:var(--mono);font-size:11px;max-height:120px;overflow-y:auto;"></div>
-  </div>
+</div>
+</div>
+
+<!-- TAB 5: LOGS -->
+<div class="tab-content" id="tab-logs">
+<div class="grid">
   <div class="card full">
     <h2 style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;">
       <span>Log</span>
@@ -1630,19 +3390,29 @@ canvas{width:100%;height:100%}
         <button class="btn btn-sm btn-ghost" onclick="copyLogs()" data-i="copy">Copy</button>
       </div>
     </h2>
-    <div id="lg" class="log"></div>
+    <div id="lg" class="log" style="max-height:500px;"></div>
   </div>
+</div>
 </div>
 <script>
 const I={
-  en:{status:'Status',statistics:'Statistics',connections:'Connections',tls_fragment:'TLS Fragment',ip_updates:'IP Updates',strategy_attempts:'Strategy Attempts',fallbacks:'Fallbacks',ping_chart:'Ping Chart (last 2min)',ip_pool:'IP Pool',sites:'Sites',proxy_bypass:'Proxy Bypass (Exclude)',config_mgmt:'Config Management',autostart:'Auto-start',refresh_ips:'Refresh IPs',reload_config:'Reload Config',reset_strategies:'Reset Strategies',add_site:'Add Site',add:'Add',load:'Load',clear_all:'Clear All',load_preset:'Load Preset...',test_all:'Test All',test:'Test',export_config:'Export Config',import_config:'Import Config',copy:'Copy',copied:'Copied!',on:'On',off:'Off',active:'Active',error:'Error',reconnecting:'Reconnecting',stopped:'Stopped',conn:'Conn',success:'OK',fail:'Fail',avg:'Avg',testing:'Testing...',test_ok:'OK',test_fail:'Fail',import_ok:'Config imported!',import_fail:'Import failed',resolve:'Resolve',resolving:'Resolving...',confirm_add:'Confirm & Add',cancel:'Cancel',no_ips_found:'No IPs found for',subdomains_found:'Subdomains found',strategy_timeline:'Strategy Timeline',cdn_finder:'CDN Finder',cdn_help_desc:'Copy the script below, open the target site, press F12, paste it into Console and press Enter.',cdn_step1:'Copy script',cdn_step2:'Open target site + F12',cdn_step3:'Paste in Console + Enter',cdn_step4:'Add domains below',add_cdn:'Add CDN',cdn_added:'CDN domain added!',cdn_select_site:'Select site...',cdn_domain_exists:'Domain already exists',cdn_no_domain:'Enter a CDN domain',remove_domain:'Domain removed',site_domains:'Site Domains',remove_site:'Remove site',remove_all_sites:'Remove All',confirm_remove_site:'Remove site',confirm_remove_all_sites:'Remove all sites? This cannot be undone.'},
-  tr:{status:'Durum',statistics:'Istatistikler',connections:'Baglantilar',tls_fragment:'TLS Fragment',ip_updates:'IP Guncelleme',strategy_attempts:'Strateji Denemeleri',fallbacks:'Geri Donusler',ping_chart:'Ping Grafigi (son 2dk)',ip_pool:'IP Havuzu',sites:'Siteler',proxy_bypass:'Proxy Haric Tutma',config_mgmt:'Config Yonetimi',autostart:'Otomatik Baslat',refresh_ips:'IP Guncelle',reload_config:'Config Yukle',reset_strategies:'Strateji Sifirla',add_site:'Site Ekle',add:'Ekle',load:'Yukle',clear_all:'Tumunu Sil',load_preset:'Preset Sec...',test_all:'Hepsini Test Et',test:'Test',export_config:'Config Disa Aktar',import_config:'Config Iceye Aktar',copy:'Kopyala',copied:'Kopyalandi!',on:'Acik',off:'Kapali',active:'Aktif',error:'Hata',reconnecting:'Yeniden Baglaniyor',stopped:'Durdu',conn:'Bag',success:'OK',fail:'Hata',avg:'Ort',testing:'Test ediliyor...',test_ok:'Basarili',test_fail:'Basarisiz',import_ok:'Config aktarildi!',import_fail:'Aktarim basarisiz',resolve:'Cozumle',resolving:'Cozumleniyor...',confirm_add:'Onayla ve Ekle',cancel:'Iptal',no_ips_found:'IP bulunamadi',subdomains_found:'Bulunan alt domainler',strategy_timeline:'Strateji Zaman Cizgisi',cdn_finder:'CDN Bulucu',cdn_help_desc:'Asagidaki scripti kopyala, hedef siteyi ac, F12 bas, Console sekmesine yapistir ve Enter bas.',cdn_step1:'Scripti kopyala',cdn_step2:'Hedef site + F12',cdn_step3:'Console yapistir + Enter',cdn_step4:'Domainleri asagiya ekle',add_cdn:'CDN Ekle',cdn_added:'CDN domaini eklendi!',cdn_select_site:'Site sec...',cdn_domain_exists:'Domain zaten mevcut',cdn_no_domain:'CDN domaini girin',remove_domain:'Domain kaldirildi',site_domains:'Site Domainleri',remove_site:'Siteyi sil',remove_all_sites:'Tumunu Sil',confirm_remove_site:'Siteyi sil',confirm_remove_all_sites:'Tum siteler silinsin mi? Bu islem geri alinamaz.'},
-  de:{status:'Status',statistics:'Statistiken',connections:'Verbindungen',tls_fragment:'TLS Fragment',ip_updates:'IP Updates',strategy_attempts:'Strategieversuche',fallbacks:'Rueckfaelle',ping_chart:'Ping-Diagramm (letzte 2min)',ip_pool:'IP-Pool',sites:'Websites',proxy_bypass:'Proxy-Bypass (Ausschluss)',config_mgmt:'Config-Verwaltung',autostart:'Autostart',refresh_ips:'IPs aktualisieren',reload_config:'Config laden',reset_strategies:'Strategien zuruecksetzen',add_site:'Website hinzufuegen',add:'Hinzufuegen',load:'Laden',clear_all:'Alle loeschen',load_preset:'Preset laden...',test_all:'Alle testen',test:'Test',export_config:'Config exportieren',import_config:'Config importieren',copy:'Kopieren',copied:'Kopiert!',on:'An',off:'Aus',active:'Aktiv',error:'Fehler',reconnecting:'Verbinde...',stopped:'Gestoppt',conn:'Verb',success:'OK',fail:'Fehler',avg:'Avg',testing:'Teste...',test_ok:'OK',test_fail:'Fehlgeschlagen',import_ok:'Config importiert!',import_fail:'Import fehlgeschlagen',resolve:'Aufloesen',resolving:'Aufloesen...',confirm_add:'Bestaetigen',cancel:'Abbrechen',no_ips_found:'Keine IPs gefunden fuer',subdomains_found:'Gefundene Subdomains',strategy_timeline:'Strategie-Zeitachse',cdn_finder:'CDN Finder',cdn_help_desc:'Kopieren Sie das Script, oeffnen Sie die Zielseite, druecken Sie F12, fuegen Sie es in die Console ein und druecken Sie Enter.',cdn_step1:'Script kopieren',cdn_step2:'Zielseite + F12',cdn_step3:'In Console einfuegen + Enter',cdn_step4:'Domains unten hinzufuegen',add_cdn:'CDN hinzufuegen',cdn_added:'CDN-Domain hinzugefuegt!',cdn_select_site:'Seite waehlen...',cdn_domain_exists:'Domain existiert bereits',cdn_no_domain:'CDN-Domain eingeben',remove_domain:'Domain entfernt',site_domains:'Seiten-Domains',remove_site:'Seite entfernen',remove_all_sites:'Alle entfernen',confirm_remove_site:'Seite entfernen',confirm_remove_all_sites:'Alle Seiten entfernen? Dies kann nicht rueckgaengig gemacht werden.'}
+  en:{status:'Status',statistics:'Statistics',connections:'Connections',tls_fragment:'TLS Fragment',ip_updates:'IP Updates',strategy_attempts:'Strategy Attempts',fallbacks:'Fallbacks',ping_chart:'Ping Chart (last 2min)',ip_pool:'IP Pool',sites:'Sites',proxy_bypass:'Proxy Bypass (Exclude)',config_mgmt:'Config Management',autostart:'Auto-start',refresh_ips:'Refresh IPs',reload_config:'Reload Config',reset_strategies:'Reset Strategies',add_site:'Add Site',add:'Add',load:'Load',clear_all:'Clear All',load_preset:'Load Preset...',test_all:'Test All',test:'Test',export_config:'Export Config',import_config:'Import Config',copy:'Copy',copied:'Copied!',on:'On',off:'Off',active:'Active',error:'Error',reconnecting:'Reconnecting',stopped:'Stopped',conn:'Conn',success:'OK',fail:'Fail',avg:'Avg',testing:'Testing...',test_ok:'OK',test_fail:'Fail',import_ok:'Config imported!',import_fail:'Import failed',resolve:'Resolve',resolving:'Resolving...',confirm_add:'Confirm & Add',cancel:'Cancel',no_ips_found:'No IPs found for',subdomains_found:'Subdomains found',strategy_timeline:'Strategy Timeline',cdn_finder:'CDN Finder',cdn_help_desc:'Copy the script below, open the target site, press F12, paste it into Console and press Enter.',cdn_step1:'Copy script',cdn_step2:'Open target site + F12',cdn_step3:'Paste in Console + Enter',cdn_step4:'Add domains below',add_cdn:'Add CDN',cdn_added:'CDN domain added!',cdn_select_site:'Select site...',cdn_domain_exists:'Domain already exists',cdn_no_domain:'Enter a CDN domain',remove_domain:'Domain removed',site_domains:'Site Domains',remove_site:'Remove site',remove_all_sites:'Remove All',confirm_remove_site:'Remove site',confirm_remove_all_sites:'Remove all sites? This cannot be undone.',fix_uwp:'Fix UWP Loopback',uwp_desc:'Microsoft Store / UWP apps not working?',uwp_done:'UWP fix applied! (admin prompt sent)',ai_engine:'AI Strategy Engine',ai_accuracy:'Accuracy',ai_predictions:'Predictions',ai_observations:'Observations',ai_active_sites:'AI Sites',ai_hourly:'Hourly Pattern Heatmap',ai_reset:'Reset AI',ai_learning:'Learning',ai_active_label:'Active',ai_site_prediction:'AI Prediction',default_bypass:'Default (built-in)',custom_bypass:'Custom',train_ai:'\ud83e\udde0 Train AI',training_results:'Training Results',training_progress:'Training in progress...',training_complete:'Training complete!',apply_strategy:'Apply',revert_strategy:'Revert',best_found:'Best strategy found',no_improvement:'No improvement found',training_active:'Training...',tab_overview:'Overview',tab_sites:'Sites',tab_ai:'AI Engine',tab_settings:'Settings',tab_logs:'Logs',general_settings:'General',info_status:'Current proxy status and connection health',info_stats:'Connection and bypass statistics since startup',info_ip_pool:'Resolved IP addresses for bypass targets',info_timeline:'Recent bypass strategy results and timing',info_sites:'Managed sites with bypass strategies. Add domains to route through proxy.',info_cdn:'Find and add CDN subdomains used by your sites for complete bypass coverage.',info_ai:'Machine learning engine that learns optimal bypass strategies per site and time.',info_general:'Core proxy settings and startup behavior',info_config:'Export, import configuration and fix UWP apps',info_bypass:'Domains that bypass the proxy and connect directly',training_intensity:'Training Intensity',intensity_light:'Light',intensity_medium:'Medium',intensity_heavy:'Heavy',intensity_nonstop:'Nonstop 24/7',intensity_warning:'Nonstop/Heavy mode makes continuous background connections to test strategies. This may increase network activity significantly.'},
+  tr:{status:'Durum',statistics:'Istatistikler',connections:'Baglantilar',tls_fragment:'TLS Fragment',ip_updates:'IP Guncelleme',strategy_attempts:'Strateji Denemeleri',fallbacks:'Geri Donusler',ping_chart:'Ping Grafigi (son 2dk)',ip_pool:'IP Havuzu',sites:'Siteler',proxy_bypass:'Proxy Haric Tutma',config_mgmt:'Config Yonetimi',autostart:'Otomatik Baslat',refresh_ips:'IP Guncelle',reload_config:'Config Yukle',reset_strategies:'Strateji Sifirla',add_site:'Site Ekle',add:'Ekle',load:'Yukle',clear_all:'Tumunu Sil',load_preset:'Preset Sec...',test_all:'Hepsini Test Et',test:'Test',export_config:'Config Disa Aktar',import_config:'Config Iceye Aktar',copy:'Kopyala',copied:'Kopyalandi!',on:'Acik',off:'Kapali',active:'Aktif',error:'Hata',reconnecting:'Yeniden Baglaniyor',stopped:'Durdu',conn:'Bag',success:'OK',fail:'Hata',avg:'Ort',testing:'Test ediliyor...',test_ok:'Basarili',test_fail:'Basarisiz',import_ok:'Config aktarildi!',import_fail:'Aktarim basarisiz',resolve:'Cozumle',resolving:'Cozumleniyor...',confirm_add:'Onayla ve Ekle',cancel:'Iptal',no_ips_found:'IP bulunamadi',subdomains_found:'Bulunan alt domainler',strategy_timeline:'Strateji Zaman Cizgisi',cdn_finder:'CDN Bulucu',cdn_help_desc:'Asagidaki scripti kopyala, hedef siteyi ac, F12 bas, Console sekmesine yapistir ve Enter bas.',cdn_step1:'Scripti kopyala',cdn_step2:'Hedef site + F12',cdn_step3:'Console yapistir + Enter',cdn_step4:'Domainleri asagiya ekle',add_cdn:'CDN Ekle',cdn_added:'CDN domaini eklendi!',cdn_select_site:'Site sec...',cdn_domain_exists:'Domain zaten mevcut',cdn_no_domain:'CDN domaini girin',remove_domain:'Domain kaldirildi',site_domains:'Site Domainleri',remove_site:'Siteyi sil',remove_all_sites:'Tumunu Sil',confirm_remove_site:'Siteyi sil',confirm_remove_all_sites:'Tum siteler silinsin mi? Bu islem geri alinamaz.',fix_uwp:'UWP Loopback Duzelt',uwp_desc:'Microsoft Store / UWP uygulamalar calismiyor mu?',uwp_done:'UWP duzeltmesi uygulandi! (admin izni istendi)',ai_engine:'AI Strateji Motoru',ai_accuracy:'Isabetlilik',ai_predictions:'Tahminler',ai_observations:'Gozlemler',ai_active_sites:'AI Siteler',ai_hourly:'Saatlik Patern Haritasi',ai_reset:'AI Sifirla',ai_learning:'Ogreniyor',ai_active_label:'Aktif',ai_site_prediction:'AI Tahmini',default_bypass:'Varsayilan (dahili)',custom_bypass:'Ozel',train_ai:'\ud83e\udde0 AI Egit',training_results:'Egitim Sonuclari',training_progress:'Egitim devam ediyor...',training_complete:'Egitim tamamlandi!',apply_strategy:'Uygula',revert_strategy:'Geri Al',best_found:'En iyi strateji bulundu',no_improvement:'Iyilestirme bulunamadi',training_active:'Egitiyor...',tab_overview:'Genel Bakis',tab_sites:'Siteler',tab_ai:'AI Motoru',tab_settings:'Ayarlar',tab_logs:'Loglar',general_settings:'Genel',info_status:'Proxy durumu ve baglanti sagligi',info_stats:'Baslangictan bu yana baglanti ve bypass istatistikleri',info_ip_pool:'Bypass hedefleri icin cozumlenmis IP adresleri',info_timeline:'Son bypass strateji sonuclari ve zamanlama',info_sites:'Bypass stratejileriyle yonetilen siteler. Proxy uzerinden yonlendirmek icin domain ekleyin.',info_cdn:'Tam bypass kapsamasi icin sitelerinizin kullandigi CDN alt domainlerini bulun.',info_ai:'Site ve zamana gore en uygun bypass stratejisini ogrenen makine ogrenimi motoru.',info_general:'Temel proxy ayarlari ve baslatma davranisi',info_config:'Yapilandirmayi disa/iceye aktarin ve UWP uygulamalarini duzelt',info_bypass:'Proxy\'yi atlayip dogrudan baglanan domainler',training_intensity:'Egitim Yogunlugu',intensity_light:'Hafif',intensity_medium:'Orta',intensity_heavy:'Yogun',intensity_nonstop:'Nonstop 7/24',intensity_warning:'Nonstop/Yogun mod, stratejileri test etmek icin surekli arka plan baglantilari yapar. Ag aktivitesini onemli olcude artirabilir.'},
+  de:{status:'Status',statistics:'Statistiken',connections:'Verbindungen',tls_fragment:'TLS Fragment',ip_updates:'IP Updates',strategy_attempts:'Strategieversuche',fallbacks:'Rueckfaelle',ping_chart:'Ping-Diagramm (letzte 2min)',ip_pool:'IP-Pool',sites:'Websites',proxy_bypass:'Proxy-Bypass (Ausschluss)',config_mgmt:'Config-Verwaltung',autostart:'Autostart',refresh_ips:'IPs aktualisieren',reload_config:'Config laden',reset_strategies:'Strategien zuruecksetzen',add_site:'Website hinzufuegen',add:'Hinzufuegen',load:'Laden',clear_all:'Alle loeschen',load_preset:'Preset laden...',test_all:'Alle testen',test:'Test',export_config:'Config exportieren',import_config:'Config importieren',copy:'Kopieren',copied:'Kopiert!',on:'An',off:'Aus',active:'Aktiv',error:'Fehler',reconnecting:'Verbinde...',stopped:'Gestoppt',conn:'Verb',success:'OK',fail:'Fehler',avg:'Avg',testing:'Teste...',test_ok:'OK',test_fail:'Fehlgeschlagen',import_ok:'Config importiert!',import_fail:'Import fehlgeschlagen',resolve:'Aufloesen',resolving:'Aufloesen...',confirm_add:'Bestaetigen',cancel:'Abbrechen',no_ips_found:'Keine IPs gefunden fuer',subdomains_found:'Gefundene Subdomains',strategy_timeline:'Strategie-Zeitachse',cdn_finder:'CDN Finder',cdn_help_desc:'Kopieren Sie das Script, oeffnen Sie die Zielseite, druecken Sie F12, fuegen Sie es in die Console ein und druecken Sie Enter.',cdn_step1:'Script kopieren',cdn_step2:'Zielseite + F12',cdn_step3:'In Console einfuegen + Enter',cdn_step4:'Domains unten hinzufuegen',add_cdn:'CDN hinzufuegen',cdn_added:'CDN-Domain hinzugefuegt!',cdn_select_site:'Seite waehlen...',cdn_domain_exists:'Domain existiert bereits',cdn_no_domain:'CDN-Domain eingeben',remove_domain:'Domain entfernt',site_domains:'Seiten-Domains',remove_site:'Seite entfernen',remove_all_sites:'Alle entfernen',confirm_remove_site:'Seite entfernen',confirm_remove_all_sites:'Alle Seiten entfernen? Dies kann nicht rueckgaengig gemacht werden.',fix_uwp:'UWP Loopback beheben',uwp_desc:'Microsoft Store / UWP-Apps funktionieren nicht?',uwp_done:'UWP-Fix angewendet! (Admin-Eingabeaufforderung gesendet)',ai_engine:'AI Strategie-Engine',ai_accuracy:'Genauigkeit',ai_predictions:'Vorhersagen',ai_observations:'Beobachtungen',ai_active_sites:'AI Seiten',ai_hourly:'Stuendliches Muster-Heatmap',ai_reset:'AI zuruecksetzen',ai_learning:'Lernt',ai_active_label:'Aktiv',ai_site_prediction:'AI Vorhersage',default_bypass:'Standard (eingebaut)',custom_bypass:'Benutzerdefiniert',train_ai:'\ud83e\udde0 AI Trainieren',training_results:'Trainingsergebnisse',training_progress:'Training laeuft...',training_complete:'Training abgeschlossen!',apply_strategy:'Anwenden',revert_strategy:'Zuruecksetzen',best_found:'Beste Strategie gefunden',no_improvement:'Keine Verbesserung',training_active:'Trainiert...',tab_overview:'Uebersicht',tab_sites:'Websites',tab_ai:'AI Engine',tab_settings:'Einstellungen',tab_logs:'Logs',general_settings:'Allgemein',info_status:'Aktueller Proxy-Status und Verbindungszustand',info_stats:'Verbindungs- und Bypass-Statistiken seit dem Start',info_ip_pool:'Aufgeloeste IP-Adressen fuer Bypass-Ziele',info_timeline:'Aktuelle Bypass-Strategie-Ergebnisse und Timing',info_sites:'Verwaltete Websites mit Bypass-Strategien. Domains hinzufuegen um ueber Proxy zu routen.',info_cdn:'CDN-Subdomains Ihrer Websites fuer vollstaendige Bypass-Abdeckung finden.',info_ai:'Machine-Learning-Engine die optimale Bypass-Strategien pro Website und Uhrzeit lernt.',info_general:'Grundlegende Proxy-Einstellungen und Startverhalten',info_config:'Konfiguration exportieren/importieren und UWP-Apps beheben',info_bypass:'Domains die den Proxy umgehen und direkt verbinden',training_intensity:'Trainingsintensitaet',intensity_light:'Leicht',intensity_medium:'Mittel',intensity_heavy:'Intensiv',intensity_nonstop:'Nonstop 24/7',intensity_warning:'Nonstop/Intensiv-Modus stellt kontinuierliche Hintergrundverbindungen her um Strategien zu testen. Dies kann die Netzwerkaktivitaet erheblich erhoehen.'}
 };
 let L=localStorage.getItem('cleannet_lang')||navigator.language.slice(0,2);
 if(!I[L])L='en';
 function setLang(l){L=l;localStorage.setItem('cleannet_lang',l);applyLang()}
 function t(k){return I[L][k]||I.en[k]||k}
+function switchTab(tab){
+  document.querySelectorAll('.tab-content').forEach(el=>el.classList.remove('active'));
+  document.querySelectorAll('.tab-btn').forEach(el=>el.classList.remove('active'));
+  const tc=document.getElementById('tab-'+tab);if(tc)tc.classList.add('active');
+  const tb=document.querySelector('.tab-btn[data-tab="'+tab+'"]');if(tb)tb.classList.add('active');
+  localStorage.setItem('cleannet_tab',tab);
+  if(tab==='overview'){setTimeout(()=>{dC();},50)}
+}
+(function(){const saved=localStorage.getItem('cleannet_tab');if(saved&&document.getElementById('tab-'+saved)){switchTab(saved)}})();
 function applyLang(){
   document.querySelectorAll('[data-i]').forEach(el=>{
     const k=el.getAttribute('data-i');
@@ -1672,7 +3442,7 @@ function U(d){try{
   document.getElementById('st_fb').textContent=d.strategy_fallbacks||0;
   document.getElementById('il').innerHTML=(d.ips||[]).map(i=>'<span class="ip">'+i+'</span>').join('');
   if(d.sites){
-    const sC={'direct':'#3dd68c','host_split':'#6c8aec','fragment_light':'#f0a030','tls_record_frag':'#38c8d8','fragment_burst':'#ff9800','desync':'#a855f7','fragment_heavy':'#f05858','sni_shuffle':'#ec4899','auto':'#585e78'};
+    const sC={'direct':'#34d399','host_split':'#818cf8','fragment_light':'#fbbf24','tls_record_frag':'#22d3ee','fragment_burst':'#ff9800','desync':'#a78bfa','fragment_heavy':'#f87171','sni_shuffle':'#ec4899','fake_tls_inject':'#fb923c','triple_split':'#4ade80','sni_padding':'#f472b6','reverse_frag':'#facc15','slow_drip':'#94a3b8','oob_inline':'#2dd4bf','dot_shuffle':'#c084fc','tls_multi_record':'#38bdf8','tls_mixed_delay':'#a3e635','sni_split_byte':'#e879f9','header_fragment':'#fb7185','auto':'#585e78'};
     document.getElementById('sl').innerHTML=Object.keys(d.sites).map(s=>{
       const si=d.sites[s];
       const isEn=si.enabled!==false;
@@ -1686,7 +3456,7 @@ function U(d){try{
       if(tt){
         if(tt.status==='testing')testHtml='<span class="test-ing" style="font-size:10px;">'+t('testing')+'</span>';
         else if(tt.status==='ok')testHtml='<span class="test-ok" style="font-size:10px;">'+t('test_ok')+' '+tt.ms+'ms</span>';
-        else testHtml='<span class="test-fail" style="font-size:10px;">'+t('test_fail')+'</span>';
+        else testHtml='<span class="test-fail" style="font-size:10px;" title="'+esc(tt.error||tt.reason||'')+'">'+t('test_fail')+'</span>';
       }
       return '<div class="site-detail">'
         +'<div class="name">'
@@ -1694,6 +3464,7 @@ function U(d){try{
         +'<span style="cursor:pointer;color:#fff;" onclick="ts(\''+s+'\')">'+s+'</span>'
         +'<span style="font-size:9px;color:'+stCol+';font-weight:700;background:'+stCol+'15;padding:2px 8px;border-radius:10px;">['+strat+']</span>'
         +(si.strategy_time_ms?'<span style="font-size:9px;color:var(--text3)">'+si.strategy_time_ms+'ms</span>':'')
+        +(si.ai&&si.ai.ai_active?'<span style="font-size:8px;color:var(--purple);background:var(--purple)15;padding:1px 6px;border-radius:8px;" title="AI confidence: '+Math.round(si.ai.confidence*100)+'%">AI '+Math.round(si.ai.confidence*100)+'%</span>':'')
         +'<span style="margin-left:auto;display:flex;gap:4px;align-items:center;">'+testHtml
         +'<span onclick="removeSite(\''+s+'\')" title="'+t('remove_site')+'" style="cursor:pointer;color:var(--red);opacity:.35;transition:opacity .2s;display:flex;padding:2px;" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.35"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/></svg></span>'
         +'</span>'
@@ -1708,10 +3479,12 @@ function U(d){try{
     }).join('');
     updateCdnSiteList(d.sites);
   }
-  if(d.proxy_bypass){renderBypass(d.proxy_bypass)}
+  if(d.proxy_bypass!==undefined){renderBypass(d.proxy_bypass,d.always_bypass)}
   if(d.autostart!==undefined){document.getElementById('as').checked=d.autostart}
   if(d.ping>0){pH.push(d.ping);if(pH.length>mP)pH.shift();dC()}
   if(d.strategy_history){renderST(d.strategy_history)}
+  if(d.ai_stats){renderAI(d.ai_stats,d.sites)}
+  if(d.self_train){updateSelfTrainUI(d.self_train)}
   if(d.new_logs&&d.new_logs.length){
     const l=document.getElementById('lg');
     d.new_logs.forEach(e=>{
@@ -1834,7 +3607,7 @@ async function removeSite(s){if(confirm(t('confirm_remove_site')+' "'+s+'"?'))aw
 async function removeAllSites(){if(confirm(t('confirm_remove_all_sites')))await fetch('/api/remove-all-sites',{method:'POST'})}
 async function testSite(s){await fetch('/api/test-site',{method:'POST',body:JSON.stringify({site:s})})}
 async function testAll(){await fetch('/api/test-all',{method:'POST'})}
-const _stC={'direct':'#3dd68c','host_split':'#6c8aec','fragment_light':'#f0a030','tls_record_frag':'#38c8d8','fragment_burst':'#ff9800','desync':'#a855f7','fragment_heavy':'#f05858','sni_shuffle':'#ec4899'};
+const _stC={'direct':'#34d399','host_split':'#818cf8','fragment_light':'#fbbf24','tls_record_frag':'#22d3ee','fragment_burst':'#ff9800','desync':'#a78bfa','fragment_heavy':'#f87171','sni_shuffle':'#ec4899','fake_tls_inject':'#fb923c','triple_split':'#4ade80','sni_padding':'#f472b6','reverse_frag':'#facc15','slow_drip':'#94a3b8','oob_inline':'#2dd4bf','dot_shuffle':'#c084fc','tls_multi_record':'#38bdf8','tls_mixed_delay':'#a3e635','sni_split_byte':'#e879f9','header_fragment':'#fb7185'};
 function renderST(hist){
   if(!hist||!hist.length)return;
   // Canvas chart
@@ -1890,20 +3663,34 @@ function renderST(hist){
       +icon+'</div>';
   }).join('');
 }
-function renderBypass(list){
-  document.getElementById('bl').innerHTML=list.map(e=>{
-    const se=esc(e).replace(/'/g,"\\'");
-    return '<div style="display:inline-flex;align-items:center;background:var(--surface2);padding:4px 10px;border-radius:6px;gap:6px;border:1px solid var(--border);">'
-      +'<span style="font-size:11px;font-family:var(--mono)">'+esc(e)+'</span>'
-      +'<span style="cursor:pointer;color:var(--red);font-weight:bold;font-size:13px;opacity:.6;transition:opacity .2s;" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.6" onclick="removeB(\''+se+'\')">&times;</span>'
-      +'</div>';
-  }).join(' ');
+function renderBypass(list,defaults){
+  let h='';
+  if(defaults&&defaults.length){
+    h+='<div style="margin-bottom:10px;"><div class="sec-title" style="margin-bottom:6px;" data-i="default_bypass">Default (built-in)</div><div style="display:flex;flex-wrap:wrap;gap:4px;">';
+    defaults.forEach(e=>{
+      h+='<span style="display:inline-flex;align-items:center;background:var(--surface3);padding:3px 8px;border-radius:5px;font-size:10px;font-family:var(--mono);color:var(--text3);border:1px solid var(--border);">'+esc(e)+'</span>';
+    });
+    h+='</div></div>';
+  }
+  if(list&&list.length){
+    h+='<div style="margin-bottom:6px;"><div class="sec-title" style="margin-bottom:6px;" data-i="custom_bypass">Custom</div><div style="display:flex;flex-wrap:wrap;gap:5px;">';
+    list.forEach(e=>{
+      const se=esc(e).replace(/'/g,"\\'");
+      h+='<div style="display:inline-flex;align-items:center;background:var(--surface2);padding:4px 10px;border-radius:6px;gap:6px;border:1px solid var(--border);">'
+        +'<span style="font-size:11px;font-family:var(--mono)">'+esc(e)+'</span>'
+        +'<span style="cursor:pointer;color:var(--red);font-weight:bold;font-size:13px;opacity:.6;transition:opacity .2s;" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.6" onclick="removeB(\''+se+'\')">&times;</span>'
+        +'</div>';
+    });
+    h+='</div></div>';
+  }
+  document.getElementById('bl').innerHTML=h;
 }
 async function addB(){const i=document.getElementById('nb');const v=i.value.trim();if(!v)return;i.value='';await fetch('/api/add-bypass',{method:'POST',body:JSON.stringify({entry:v})})}
 async function removeB(e){await fetch('/api/remove-bypass',{method:'POST',body:JSON.stringify({entry:e})})}
 async function clearBypass(){if(confirm(t('Are you sure you want to clear the entire bypass list?'))){await fetch('/api/clear-bypass',{method:'POST'})}}
 async function loadPreset(){const sel=document.getElementById('preset');const v=sel.value;if(!v)return;sel.value='';await fetch('/api/load-preset',{method:'POST',body:JSON.stringify({preset:v})})}
 async function toggleAS(){await fetch('/api/toggle-autostart',{method:'POST'})}
+async function fixUwp(){const b=document.getElementById('uwpBtn');b.disabled=true;b.textContent='...';try{await fetch('/api/fix-uwp',{method:'POST'});b.textContent=t('uwp_done');setTimeout(()=>{b.textContent=t('fix_uwp');b.disabled=false},3000)}catch(e){b.textContent='Error';b.disabled=false}}
 function exportCfg(){window.open('/api/export-config','_blank')}
 async function importCfg(ev){
   const f=ev.target.files[0];if(!f)return;
@@ -1935,10 +3722,211 @@ const _cdnParts=['(function(){var h=location.hostname,ds={};performance.getEntri
 const _cdnScript=_cdnParts.join('');
 function copyCdnScript(){navigator.clipboard.writeText(_cdnScript).then(()=>{const b=document.getElementById('cdnCopyBtn');b.textContent=t('copied');setTimeout(()=>b.textContent=t('copy'),1500)})}
 (function(){const el=document.getElementById('cdnSnippet');if(el){el.textContent=_cdnScript;const btn=document.createElement('button');btn.className='cdn-snippet-copy';btn.id='cdnCopyBtn';btn.textContent='Copy';btn.onclick=copyCdnScript;el.appendChild(btn)}})();
+function renderAI(ai,sites){
+  const acc=document.getElementById('ai_acc');
+  const pred=document.getElementById('ai_pred');
+  const obs=document.getElementById('ai_obs');
+  const aiSites=document.getElementById('ai_sites');
+  const status=document.getElementById('ai_status');
+  if(!ai)return;
+  acc.textContent=ai.accuracy+'%';
+  acc.style.color=ai.accuracy>70?'var(--green)':ai.accuracy>40?'var(--orange)':'var(--red)';
+  pred.textContent=ai.total_predictions;
+  obs.textContent=ai.total_observations;
+  aiSites.textContent=ai.sites_with_data;
+  if(ai.sites_with_data>0){
+    status.textContent=t('ai_active_label');status.className='badge b-running';
+  }else{
+    status.textContent=t('ai_learning');status.className='badge b-reconnecting';
+  }
+  // Update training intensity UI from server state
+  if(ai.train_intensity&&ai.train_intensity!==_currentIntensity){
+    updateIntensityUI(ai.train_intensity);
+  }else if(!document.querySelector('.intensity-btn[style*="linear-gradient"]')){
+    updateIntensityUI(ai.train_intensity||'light');
+  }
+  // AI site details
+  const det=document.getElementById('ai_detail');
+  if(sites){
+    let h='';
+    const sC={'direct':'#34d399','host_split':'#818cf8','fragment_light':'#fbbf24','tls_record_frag':'#22d3ee','fragment_burst':'#ff9800','desync':'#a78bfa','fragment_heavy':'#f87171','sni_shuffle':'#ec4899','fake_tls_inject':'#fb923c','triple_split':'#4ade80','sni_padding':'#f472b6','reverse_frag':'#facc15','slow_drip':'#94a3b8','oob_inline':'#2dd4bf','dot_shuffle':'#c084fc','tls_multi_record':'#38bdf8','tls_mixed_delay':'#a3e635','sni_split_byte':'#e879f9','header_fragment':'#fb7185'};
+    Object.keys(sites).forEach(s=>{
+      const si=sites[s];
+      if(!si.ai||!si.ai.ai_active)return;
+      const a=si.ai;
+      const col=sC[a.predicted_strategy]||'#585e78';
+      const confPct=Math.round(a.confidence*100);
+      const confCol=confPct>70?'var(--green)':confPct>40?'var(--orange)':'var(--red)';
+      h+='<div style="display:flex;align-items:center;gap:10px;padding:6px 8px;border-bottom:1px solid var(--border);border-radius:4px;">';
+      h+='<span style="color:#fff;font-weight:600;min-width:70px;">'+esc(s)+'</span>';
+      h+='<span style="color:'+col+';background:'+col+'15;padding:2px 8px;border-radius:8px;font-size:10px;font-weight:700;">'+esc(a.predicted_strategy)+'</span>';
+      h+='<span style="color:'+confCol+';font-size:10px;">'+confPct+'% conf</span>';
+      h+='<span style="color:var(--text3);font-size:10px;">'+a.total_observations+' obs</span>';
+      if(a.top_3&&a.top_3.length>1){
+        h+='<span style="color:var(--text3);font-size:9px;margin-left:auto;">';
+        a.top_3.slice(1).forEach(p=>{
+          h+='<span style="color:'+(sC[p.strategy]||'#585e78')+';margin-left:4px;">'+p.strategy.slice(0,6)+':'+Math.round(p.score*100)+'</span>';
+        });
+        h+='</span>';
+      }
+      h+='</div>';
+    });
+    det.innerHTML=h||'<div style="color:var(--text3);padding:8px;">'+t('ai_learning')+'...</div>';
+  }
+  // Heatmap
+  renderAIHeatmap(sites);
+}
+function renderAIHeatmap(sites){
+  const cv=document.getElementById('ai_heatmap');if(!cv)return;
+  const x=cv.getContext('2d');const r=window.devicePixelRatio||1;
+  cv.width=cv.offsetWidth*r;cv.height=cv.offsetHeight*r;
+  x.scale(r,r);const w=cv.offsetWidth,h=cv.offsetHeight;
+  x.clearRect(0,0,w,h);
+  // Collect hour_best from all sites
+  const hourData={};
+  const sC={'direct':'#34d399','host_split':'#818cf8','fragment_light':'#fbbf24','tls_record_frag':'#22d3ee','fragment_burst':'#ff9800','desync':'#a78bfa','fragment_heavy':'#f87171','sni_shuffle':'#ec4899','fake_tls_inject':'#fb923c','triple_split':'#4ade80','sni_padding':'#f472b6','reverse_frag':'#facc15','slow_drip':'#94a3b8','oob_inline':'#2dd4bf','dot_shuffle':'#c084fc','tls_multi_record':'#38bdf8','tls_mixed_delay':'#a3e635','sni_split_byte':'#e879f9','header_fragment':'#fb7185'};
+  if(!sites)return;
+  const siteNames=Object.keys(sites).filter(s=>sites[s].ai&&sites[s].ai.hour_best);
+  if(!siteNames.length)return;
+  const cellW=w/24;const cellH=Math.min(20,h/(siteNames.length+1));
+  // Header row - hours
+  x.fillStyle='#585e78';x.font='8px monospace';x.textAlign='center';
+  for(let hr=0;hr<24;hr++){
+    x.fillText(hr.toString().padStart(2,'0'),hr*cellW+cellW/2,10);
+  }
+  // Rows per site
+  siteNames.forEach((s,si)=>{
+    const ai=sites[s].ai;
+    const yOff=14+si*cellH;
+    // Site label
+    x.fillStyle='#8890a8';x.font='8px monospace';x.textAlign='left';
+    for(let hr=0;hr<24;hr++){
+      const hb=ai.hour_best[hr.toString()];
+      const xPos=hr*cellW;
+      if(hb){
+        const col=sC[hb.strategy]||'#585e78';
+        const alpha=Math.max(0.2,hb.rate);
+        x.globalAlpha=alpha;
+        x.fillStyle=col;
+        x.fillRect(xPos+1,yOff,cellW-2,cellH-2);
+        x.globalAlpha=1;
+      }else{
+        x.fillStyle='#181b27';
+        x.fillRect(xPos+1,yOff,cellW-2,cellH-2);
+      }
+    }
+    // Site name on right
+    x.fillStyle='#8890a8';x.font='8px monospace';x.textAlign='left';
+  });
+}
+// ==================== TRAINING ====================
+let _trainPoll=null;
+let _currentIntensity='light';
+const _intensityInfo={
+  light:{en:'Every 30min, 3 probes per site',tr:'30 dakikada bir, site basina 3 test',de:'Alle 30min, 3 Tests pro Seite'},
+  medium:{en:'Every 10min, 5 probes per site',tr:'10 dakikada bir, site basina 5 test',de:'Alle 10min, 5 Tests pro Seite'},
+  heavy:{en:'Every 2min, 8 probes per site',tr:'2 dakikada bir, site basina 8 test',de:'Alle 2min, 8 Tests pro Seite'},
+  nonstop:{en:'Every 15s, 10 probes per site (24/7)',tr:'15 saniyede bir, site basina 10 test (7/24)',de:'Alle 15s, 10 Tests pro Seite (24/7)'}
+};
+function updateIntensityUI(intensity){
+  _currentIntensity=intensity;
+  document.querySelectorAll('.intensity-btn').forEach(b=>{
+    const isActive=b.dataset.intensity===intensity;
+    b.style.background=isActive?'linear-gradient(135deg,var(--accent),var(--purple))':'transparent';
+    b.style.borderColor=isActive?'var(--accent)':'var(--border)';
+    b.style.color=isActive?'#fff':'var(--text2)';
+  });
+  const desc=document.getElementById('intensityDesc');
+  if(desc&&_intensityInfo[intensity]){desc.textContent=_intensityInfo[intensity][L]||_intensityInfo[intensity].en;}
+  const warn=document.getElementById('intensityWarning');
+  if(warn){warn.style.display=(intensity==='nonstop'||intensity==='heavy')?'block':'none';}
+}
+function updateSelfTrainUI(st){
+  const dot=document.getElementById('selfTrainDot');
+  const txt=document.getElementById('selfTrainText');
+  const info=document.getElementById('selfTrainInfo');
+  if(!dot||!txt)return;
+  if(st.running){
+    dot.style.background='var(--green)';
+    dot.style.animation='pulse 1s infinite';
+    txt.style.color='var(--green)';
+    txt.textContent=st.last_site?('Training '+st.last_site+'...'):'Training...';
+  }else if(st.total_probes>0){
+    dot.style.background='var(--accent)';
+    dot.style.animation='none';
+    txt.style.color='var(--text2)';
+    const ago=st.last_run>=0?(st.last_run<60?st.last_run+'s ago':Math.floor(st.last_run/60)+'m ago'):'';
+    txt.textContent='Idle'+(ago?' · '+ago:'');
+  }else{
+    dot.style.background='var(--text3)';
+    dot.style.animation='none';
+    txt.style.color='var(--text3)';
+    txt.textContent=L==='tr'?'Bekleniyor...':'Waiting...';
+  }
+  if(st.total_probes>0&&info){
+    info.style.display='block';
+    const pr=document.getElementById('stProbes');if(pr)pr.textContent=st.total_probes;
+    const cy=document.getElementById('stCycles');if(cy)cy.textContent=st.cycle_count;
+    const la=document.getElementById('stLast');if(la)la.textContent=st.last_result||'-';
+    if(st.last_result&&st.last_result.includes('OK')){la.style.color='var(--green)';}
+    else if(st.last_result&&st.last_result.includes('FAIL')){la.style.color='var(--red)';}
+  }
+}
+async function setTrainIntensity(intensity){
+  updateIntensityUI(intensity);
+  try{
+    await fetch('/api/ai-train-intensity',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({intensity:intensity})});
+  }catch(e){console.error('Set intensity error:',e);}
+}
+async function startTraining(){
+  const b=document.getElementById('trainBtn');b.disabled=true;b.textContent=t('training_active');
+  document.getElementById('trainPanel').style.display='block';
+  document.getElementById('trainProgress').innerHTML='<div style="color:var(--accent);font-size:11px;">'+t('training_progress')+'</div>';
+  document.getElementById('trainResults').innerHTML='';
+  await fetch('/api/train-start',{method:'POST'});
+  _trainPoll=setInterval(pollTraining,2000);
+}
+async function pollTraining(){
+  try{
+    const r=await fetch('/api/train-status');const d=await r.json();
+    let ph='';
+    if(d.progress){Object.keys(d.progress).forEach(s=>{
+      const p=d.progress[s];
+      ph+='<div style="margin-bottom:6px;"><span style="color:#fff;font-size:11px;font-weight:600;">'+s+'</span> ';
+      ph+='<span style="color:var(--text3);font-size:10px;">'+p.current_strat+' ('+p.tested+'/'+p.total+')</span>';
+      ph+='<div style="background:var(--surface3);border-radius:4px;height:4px;margin-top:3px;"><div style="background:linear-gradient(90deg,var(--accent),var(--purple));height:100%;border-radius:4px;width:'+p.pct+'%;transition:width .3s;"></div></div></div>';
+    })}
+    document.getElementById('trainProgress').innerHTML=ph||'<div style="color:var(--accent);font-size:11px;">'+t('training_progress')+'</div>';
+    if(d.completed&&!d.active){
+      clearInterval(_trainPoll);_trainPoll=null;
+      const b=document.getElementById('trainBtn');b.disabled=false;b.textContent=t('train_ai');
+      document.getElementById('trainProgress').innerHTML='<div style="color:var(--green);font-size:11px;font-weight:600;">'+t('training_complete')+'</div>';
+      let rh='';
+      if(d.results){Object.keys(d.results).forEach(s=>{
+        const rs=d.results[s];
+        const canRevert=d.previous_strategies&&d.previous_strategies[s]!==undefined;
+        rh+='<div style="background:var(--surface2);border-radius:8px;padding:10px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:8px;">';
+        rh+='<div><span style="color:#fff;font-weight:600;font-size:11px;">'+s+'</span><br>';
+        if(rs.best_strategy){rh+='<span style="color:var(--green);font-size:10px;font-weight:700;">'+rs.best_strategy+'</span> <span style="color:var(--text3);font-size:9px;">'+rs.best_ms+'ms ('+rs.success_count+'/'+rs.total_tested+')</span>';}
+        else{rh+='<span style="color:var(--red);font-size:10px;">'+t('no_improvement')+'</span>';}
+        rh+='</div><div style="display:flex;gap:4px;">';
+        if(rs.best_strategy){rh+='<button class="btn btn-sm btn-green" onclick="applyTraining(\''+s+'\')">'+t('apply_strategy')+'</button>';}
+        if(canRevert){rh+='<button class="btn btn-sm btn-red" onclick="revertTraining(\''+s+'\')">'+t('revert_strategy')+'</button>';}
+        rh+='</div></div>';
+      })}
+      document.getElementById('trainResults').innerHTML=rh;
+    }
+  }catch(e){console.error('pollTraining error:',e)}
+}
+async function applyTraining(s){await fetch('/api/train-apply',{method:'POST',body:JSON.stringify({site:s})});if(_trainPoll)clearInterval(_trainPoll);pollTraining()}
+async function revertTraining(s){await fetch('/api/train-revert',{method:'POST',body:JSON.stringify({site:s})});pollTraining()}
 applyLang();
+// Initialize training intensity from server
+fetch('/api/ai-train-intensity').then(r=>r.json()).then(d=>{if(d.intensity)updateIntensityUI(d.intensity)}).catch(()=>{updateIntensityUI('light')});
 </script></body></html>"""
 
 async def handle_http(reader, writer):
+    global _ai_train_intensity
     try:
         request_line = await asyncio.wait_for(reader.readline(), timeout=5)
         if not request_line:
@@ -2139,6 +4127,88 @@ async def handle_http(reader, writer):
 
         elif path == '/api/reset-strategies' and method == 'POST':
             _strategy_cache.reset_all()
+            _ai_engine.reset()
+            writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"ok":true}')
+
+        elif path == '/api/ai-stats':
+            stats = _ai_engine.get_global_stats()
+            stats['train_intensity'] = _ai_train_intensity
+            stats['train_profile'] = AI_TRAIN_PROFILES.get(_ai_train_intensity, AI_TRAIN_PROFILES['light'])
+            ai_data = json.dumps(stats).encode()
+            writer.write(
+                b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
+                b'Content-Length: ' + str(len(ai_data)).encode() + b'\r\n\r\n'
+            )
+            writer.write(ai_data)
+
+        elif path == '/api/ai-train-intensity' and method == 'GET':
+            resp = json.dumps({'intensity': _ai_train_intensity, 'profiles': AI_TRAIN_PROFILES}).encode()
+            writer.write(
+                b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
+                b'Content-Length: ' + str(len(resp)).encode() + b'\r\n\r\n'
+            )
+            writer.write(resp)
+
+        elif path == '/api/ai-train-intensity' and method == 'POST':
+            try:
+                body_bytes = await reader.read(1024)
+                body_data = json.loads(body_bytes.decode()) if body_bytes else {}
+                new_intensity = body_data.get('intensity', 'light')
+                if new_intensity in AI_TRAIN_PROFILES:
+                    _ai_train_intensity = new_intensity
+                    _ai_engine._dirty = True
+                    _ai_engine._do_save()
+                    logger.info(f"[AI] Training intensity changed to: {new_intensity}")
+                    writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"ok":true}')
+                else:
+                    writer.write(b'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\n\r\n{"error":"invalid intensity"}')
+            except Exception as e:
+                logger.error(f"[AI] Set intensity error: {e}")
+                writer.write(b'HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{"error":"server error"}')
+
+        elif path == '/api/ai-reset' and method == 'POST':
+            _ai_engine.reset()
+            writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"ok":true}')
+
+        elif path == '/api/train-start' and method == 'POST':
+            if not _training_state['active']:
+                asyncio.create_task(_train_all_sites())
+            writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"ok":true}')
+
+        elif path == '/api/train-status':
+            train_data = json.dumps({
+                'active': _training_state['active'],
+                'completed': _training_state['completed'],
+                'progress': _training_state['progress'],
+                'results': {s: {k: v for k, v in r.items() if k != 'all_results'} for s, r in _training_state['results'].items()},
+                'previous_strategies': _training_state['previous_strategies'],
+            }).encode()
+            writer.write(
+                b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n'
+                b'Content-Length: ' + str(len(train_data)).encode() + b'\r\n\r\n'
+            )
+            writer.write(train_data)
+
+        elif path == '/api/train-apply' and method == 'POST':
+            try:
+                body_bytes = await reader.read(1024)
+                req_data = json.loads(body_bytes.decode())
+                site_name = req_data.get('site', '')
+                if site_name:
+                    _apply_training(site_name)
+            except Exception as e:
+                logger.error(f"Train apply error: {e}")
+            writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"ok":true}')
+
+        elif path == '/api/train-revert' and method == 'POST':
+            try:
+                body_bytes = await reader.read(1024)
+                req_data = json.loads(body_bytes.decode())
+                site_name = req_data.get('site', '')
+                if site_name:
+                    _revert_training(site_name)
+            except Exception as e:
+                logger.error(f"Train revert error: {e}")
             writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"ok":true}')
 
         elif path == '/api/add-bypass' and method == 'POST':
@@ -2263,6 +4333,19 @@ async def handle_http(reader, writer):
                 logger.error(f"Import config error: {e}")
                 writer.write(b'HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{"error":"Import failed"}')
 
+        elif path == '/api/fix-uwp' and method == 'POST':
+            try:
+                import tempfile
+                bat_path = os.path.join(tempfile.gettempdir(), 'cleannet_uwp_fix.bat')
+                with open(bat_path, 'w', encoding='utf-8') as f:
+                    f.write('@echo off\r\nCheckNetIsolation LoopbackExempt -a -p=S-1-15-2-1 >nul 2>&1\r\n')
+                ctypes.windll.shell32.ShellExecuteW(None, 'runas', bat_path, None, None, 1)
+                logger.info("[UWP] Loopback exemption requested (admin prompt)")
+                writer.write(b'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n\r\n{"ok":true}')
+            except Exception as e:
+                logger.error(f"UWP fix error: {e}")
+                writer.write(b'HTTP/1.1 500 Internal Server Error\r\nContent-Type: application/json\r\n\r\n{"error":"UWP fix failed"}')
+
         else:
             writer.write(b'HTTP/1.1 404 Not Found\r\n\r\n')
 
@@ -2278,6 +4361,7 @@ def _get_stats_data():
         strat_info = _strategy_cache.get_site_strategy_info(site_name)
         ss = _site_stats.get(site_name, {'connections': 0, 'successes': 0, 'failures': 0, 'total_ms': 0})
         avg_ms = round(ss['total_ms'] / ss['successes']) if ss['successes'] > 0 else 0
+        ai_insights = _ai_engine.get_site_insights(site_name)
         site_data[site_name] = {
             'enabled': site_info.get('enabled', True),
             'current_strategy': strat_info['strategy'],
@@ -2289,6 +4373,7 @@ def _get_stats_data():
             'fail_count': ss['failures'],
             'avg_ms': avg_ms,
             'test': _test_results.get(site_name),
+            'ai': ai_insights,
         }
     return {
         'status': _status,
@@ -2302,8 +4387,19 @@ def _get_stats_data():
         'ips': list(BYPASS_IPS),
         'sites': site_data,
         'proxy_bypass': _config.get('proxy_bypass', []),
+        'always_bypass': ALWAYS_BYPASS,
         'autostart': get_autostart(),
         'strategy_history': list(_strategy_history)[-50:],
+        'ai_stats': _ai_engine.get_global_stats(),
+        'training': {'active': _training_state['active'], 'completed': _training_state['completed']},
+        'self_train': {
+            'running': _self_train_state['running'],
+            'total_probes': _self_train_state['total_probes'],
+            'cycle_count': _self_train_state['cycle_count'],
+            'last_site': _self_train_state['last_site'],
+            'last_result': _self_train_state['last_result'],
+            'last_run': int(time.time() - _self_train_state['last_run']) if _self_train_state['last_run'] > 0 else -1,
+        },
     }
 
 def _get_sse_data(last_log_id):
@@ -2370,6 +4466,7 @@ def _on_exit(icon, item):
     logger.info("User exit")
     _running = False
     _strategy_cache.force_save()
+    _ai_engine.force_save()
     set_proxy(False)
     if _loop and _shutdown_event:
         _loop.call_soon_threadsafe(_shutdown_event.set)
@@ -2405,12 +4502,8 @@ def _do_full_shutdown(icon):
             "Bu islem asagidakileri yapacaktir:\n\n"
             "1. DPI Bypass proxy'si durdurulacak\n"
             "2. Windows proxy ayarlari sifirlanacak\n"
-            "3. DNS onbellegi temizlenecek (ipconfig /flushdns)\n"
-            "4. IP adresi serbest birakilip yenilenecek (ipconfig /release & /renew)\n"
-            "5. Winsock katalogu sifirlanacak (netsh winsock reset)\n"
-            "6. TCP/IP yigini sifirlanacak (netsh int ip reset)\n\n"
-            "Not: Ag sifirlamalari yonetici izni gerektirir.\n"
-            "Islem sirasinda internet baglantiniz kisa sureligine kesilecektir.\n\n"
+            "3. DNS onbellegi temizlenecek (ipconfig /flushdns)\n\n"
+            "Diger uygulamalariniz etkilenmeyecektir.\n\n"
             "Devam etmek istiyor musunuz?"
         )
     elif lang == 'de':
@@ -2419,12 +4512,8 @@ def _do_full_shutdown(icon):
             "Folgende Aktionen werden ausgefuehrt:\n\n"
             "1. DPI-Bypass-Proxy wird gestoppt\n"
             "2. Windows-Proxy-Einstellungen werden zurueckgesetzt\n"
-            "3. DNS-Cache wird geleert (ipconfig /flushdns)\n"
-            "4. IP-Adresse wird freigegeben und erneuert (ipconfig /release & /renew)\n"
-            "5. Winsock-Katalog wird zurueckgesetzt (netsh winsock reset)\n"
-            "6. TCP/IP-Stack wird zurueckgesetzt (netsh int ip reset)\n\n"
-            "Hinweis: Netzwerk-Resets erfordern Administratorrechte.\n"
-            "Ihre Internetverbindung wird kurzzeitig unterbrochen.\n\n"
+            "3. DNS-Cache wird geleert (ipconfig /flushdns)\n\n"
+            "Andere Anwendungen werden nicht beeintraechtigt.\n\n"
             "Moechten Sie fortfahren?"
         )
     else:
@@ -2433,12 +4522,8 @@ def _do_full_shutdown(icon):
             "The following actions will be performed:\n\n"
             "1. DPI Bypass proxy will be stopped\n"
             "2. Windows proxy settings will be cleared\n"
-            "3. DNS cache will be flushed (ipconfig /flushdns)\n"
-            "4. IP address will be released and renewed (ipconfig /release & /renew)\n"
-            "5. Winsock catalog will be reset (netsh winsock reset)\n"
-            "6. TCP/IP stack will be reset (netsh int ip reset)\n\n"
-            "Note: Network resets require administrator privileges.\n"
-            "Your internet connection will be briefly interrupted.\n\n"
+            "3. DNS cache will be flushed (ipconfig /flushdns)\n\n"
+            "Other applications will not be affected.\n\n"
             "Do you want to continue?"
         )
 
@@ -2452,6 +4537,7 @@ def _do_full_shutdown(icon):
     logger.info("Full shutdown initiated")
     _running = False
     _strategy_cache.force_save()
+    _ai_engine.force_save()
     set_proxy(False)
     if _loop and _shutdown_event:
         _loop.call_soon_threadsafe(_shutdown_event.set)
@@ -2460,12 +4546,8 @@ def _do_full_shutdown(icon):
     bat_content = (
         '@echo off\r\n'
         'ipconfig /flushdns >nul 2>&1\r\n'
-        'ipconfig /release >nul 2>&1\r\n'
-        'ipconfig /renew >nul 2>&1\r\n'
-        'netsh winsock reset >nul 2>&1\r\n'
-        'netsh int ip reset >nul 2>&1\r\n'
-        'echo [OK] Network reset completed.\r\n'
-        'timeout /t 3 /nobreak >nul\r\n'
+        'echo [OK] DNS cache flushed.\r\n'
+        'timeout /t 2 /nobreak >nul\r\n'
     )
     bat_path = os.path.join(tempfile.gettempdir(), 'dpi_bypass_shutdown.bat')
     try:
@@ -2490,7 +4572,7 @@ def _on_restart(icon, item):
 def _setup_tray():
     global _tray_icon
     menu = pystray.Menu(
-        pystray.MenuItem('CleanNet v1.0', None, enabled=False),
+        pystray.MenuItem('CleanNet v1.1.0', None, enabled=False),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem(lambda t: f"Status: {_STATUS_TEXT.get(_status, _status)}", None, enabled=False),
         pystray.MenuItem(lambda t: f"Ping: {_ping_ms}ms" if _ping_ms > 0 else "Ping: --", None, enabled=False),
@@ -2534,6 +4616,7 @@ async def _async_main():
 
     asyncio.create_task(health_check_loop())
     asyncio.create_task(strategy_retest_loop())
+    asyncio.create_task(_self_training_loop())
     await _shutdown_event.wait()
 
     proxy.close()
@@ -2553,7 +4636,7 @@ def start_proxy():
     global _loop, _start_time, _running
 
     logger.info("=" * 50)
-    logger.info("CleanNet v1.0 starting...")
+    logger.info("CleanNet v1.1.0 starting...")
     logger.info(f"Bypass sites: {', '.join(_site_names)}")
 
     set_proxy(False)

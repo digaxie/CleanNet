@@ -42,5 +42,6 @@
         }
     },
     "proxy_port": 8080,
-    "dashboard_port": 8888
+    "dashboard_port": 8888,
+    "proxy_bypass": []
 }

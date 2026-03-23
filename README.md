@@ -4,6 +4,13 @@
 
 A lightweight, single-file Python tool that bypasses ISP-level Deep Packet Inspection (DPI) by fragmenting TLS ClientHello packets. It runs entirely on your machine as a local HTTP proxy (`127.0.0.1:8080`) with a web dashboard and system tray icon.
 
+## What's New in v1.1.0
+
+- Stronger TLS validation prevents broken or ISP-injected SSL certificate paths from being misdetected as successful connections.
+- Smarter strategy learning avoids caching invalid TLS paths as working bypass routes.
+- Expanded strategy engine and improved per-site training behavior.
+- Cleaner public release package with Discord-focused default configuration and generated runtime artifacts excluded from version control.
+
 ## How It Works
 
 When you visit a blocked website, your ISP inspects the **TLS ClientHello** packet to read the **SNI (Server Name Indication)** field — the domain name sent in plaintext during the TLS handshake. If the domain is on their blocklist, they inject a TCP RST packet to kill your connection.
@@ -28,7 +35,7 @@ Browser ──CONNECT──▶ CleanNet (127.0.0.1:8080) ──fragmented TLS─
 
 ## Features
 
-- **8 Bypass Strategies** — Automatically discovers the best method for each site (see [Strategies](#bypass-strategies))
+- **Expanded Strategy Engine (25 strategies)** — Automatically discovers the best method for each site (see [Strategies](#bypass-strategies))
 - **Strategy Cache** — Learns and remembers working strategies; first visit may take 15–30s, subsequent visits are instant (~250ms)
 - **Web Dashboard** — Real-time monitoring at `http://127.0.0.1:8888` with live stats, ping chart, strategy timeline, and log viewer
 - **Site Wizard** — Add sites from the dashboard with DNS resolution preview before adding
@@ -147,12 +154,13 @@ These files are created automatically at runtime and are excluded from version c
 | File | Purpose |
 |------|---------|
 | `strategy_cache.json` | Stores discovered bypass strategies per site. Auto-populated, safe to delete (strategies will be re-discovered). |
+| `ai_strategy.json` | Stores the AI engine's learned site data and predictions. Auto-populated, safe to delete. |
 | `stats.json` | Persistent connection statistics. Auto-populated, safe to delete. |
-| `bypass.log` | Application log. Rotated automatically, safe to delete. |
+| `bypass.log` / `bypass.log.*` | Application log and rotated log files. Auto-populated, safe to delete. |
 
 ## Bypass Strategies
 
-CleanNet tests these 8 strategies in order and caches the fastest one that works:
+CleanNet currently implements 25 strategies and tests them in a tuned order, then caches the fastest verified option that works:
 
 | # | Strategy | How It Works |
 |---|----------|--------------|
@@ -248,6 +256,13 @@ This tool is provided for **educational and personal use** to access content tha
 
 ISP düzeyindeki Derin Paket İnceleme (DPI) engellemelerini, TLS ClientHello paketlerini parçalayarak aşan hafif, tek dosyalı bir Python aracı. Tamamen yerel olarak çalışır — bilgisayarınızda `127.0.0.1:8080` adresinde HTTP proxy olarak hizmet verir, web dashboard ve sistem tepsisi ikonu ile birlikte gelir.
 
+### v1.1.0 ile Gelenler
+
+- Daha sıkı TLS doğrulaması sayesinde bozuk veya ISS tarafından enjekte edilen SSL sertifika yolları artık başarılı bağlantı gibi algılanmaz.
+- Geçersiz TLS yollarının çalışan strateji olarak cache'e alınması ve öğrenilmesi engellendi.
+- Strateji motoru ve site bazlı eğitim davranışı geliştirildi.
+- Public sürüm paketi, Discord odaklı daha temiz bir varsayılan yapılandırma ve sürüm kontrolü dışında bırakılan runtime dosyalarıyla hazırlandı.
+
 ### Nasıl Çalışır
 
 Engelli bir siteye bağlanmaya çalıştığınızda, ISP'niz TLS handshake sırasında gönderilen **SNI (Server Name Indication)** alanını okur. Bu alan domain adını düz metin olarak içerir. Domain engel listesindeyse, ISP bağlantınızı kesmek için TCP RST paketi enjekte eder.
@@ -263,7 +278,7 @@ CleanNet, tarayıcınız ile internet arasında yerel bir proxy olarak durur. By
 
 ### Özellikler
 
-- **8 Bypass Stratejisi** — Her site için otomatik olarak en iyi yöntemi keşfeder
+- **Genişletilmiş Strateji Motoru (25 strateji)** — Her site için otomatik olarak en iyi yöntemi keşfeder
 - **Strateji Önbelleği** — Çalışan stratejileri öğrenir ve hatırlar; ilk ziyaret 15–30s sürebilir, sonrakiler anlık (~250ms)
 - **Web Dashboard** — `http://127.0.0.1:8888` adresinde canlı istatistikler, ping grafiği, strateji zaman çizelgesi ve log görüntüleyici
 - **Site Sihirbazı** — Dashboard'dan DNS çözümleme önizlemesi ile site ekleyin
@@ -351,6 +366,13 @@ Bazı siteler, site adını içermeyen CDN domainlerinden içerik sunar. Bunlar�
 
 Ein leichtgewichtiges, Python-basiertes Einzeldatei-Tool, das ISP-Level Deep Packet Inspection (DPI) umgeht, indem es TLS-ClientHello-Pakete fragmentiert. Es läuft vollständig lokal als HTTP-Proxy (`127.0.0.1:8080`) mit Web-Dashboard und System-Tray-Symbol.
 
+### Neu in v1.1.0
+
+- Eine strengere TLS-Validierung verhindert, dass fehlerhafte oder vom ISP eingeschleuste SSL-Zertifikatspfade als erfolgreiche Verbindung erkannt werden.
+- Ungültige TLS-Pfade werden nicht mehr als funktionierende Strategien gelernt oder zwischengespeichert.
+- Die Strategie-Engine und das standortbezogene Training wurden erweitert.
+- Das öffentliche Release wurde mit einer saubereren, auf Discord fokussierten Standardkonfiguration und ohne lokale Laufzeitartefakte vorbereitet.
+
 ### Funktionsweise
 
 Wenn Sie eine gesperrte Website besuchen, liest Ihr ISP das **SNI-Feld (Server Name Indication)** im TLS-Handshake — den Domainnamen, der im Klartext gesendet wird. Steht die Domain auf der Sperrliste, wird Ihre Verbindung durch ein eingeschleustes TCP-RST-Paket unterbrochen.
@@ -366,7 +388,7 @@ CleanNet sitzt als lokaler Proxy zwischen Ihrem Browser und dem Internet. Bei ei
 
 ### Funktionen
 
-- **8 Bypass-Strategien** — Findet automatisch die beste Methode für jede Website
+- **Erweiterte Strategie-Engine (25 Strategien)** — Findet automatisch die beste Methode für jede Website
 - **Strategie-Cache** — Lernt und speichert funktionierende Strategien; erster Besuch kann 15–30s dauern, danach sofort (~250ms)
 - **Web-Dashboard** — Echtzeitüberwachung unter `http://127.0.0.1:8888`
 - **Website-Assistent** — Websites mit DNS-Auflösungsvorschau hinzufügen

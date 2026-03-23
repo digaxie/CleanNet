@@ -1,12 +1,4 @@
 @echo off
-
-REM ==================== AUTO-ELEVATE TO ADMIN ====================
-net session >nul 2>&1
-if %errorlevel% neq 0 (
-    powershell -Command "Start-Process '%~f0' -Verb RunAs"
-    exit /b
-)
-
 setlocal enabledelayedexpansion
 chcp 65001 >nul 2>&1
 title CleanNet - DPI Bypass Launcher
@@ -108,9 +100,6 @@ REM Clear old proxy settings
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable /t REG_DWORD /d 0 /f >nul 2>&1
 echo !STR_PROXY_CLEAR!
 
-REM Enable UWP loopback access (required for Microsoft Store, Mail, etc. to work with local proxy)
-CheckNetIsolation LoopbackExempt -a -p=S-1-15-2-1 >nul 2>&1
-
 REM Check if pythonw.exe is running before asking
 tasklist /fi "imagename eq pythonw.exe" 2>nul | find /i "pythonw.exe" >nul 2>&1
 if !errorlevel! equ 0 (
@@ -128,7 +117,7 @@ echo.
 
 REM Install dependencies
 echo !STR_DEP_CHECK!
-python -m pip install -r "%~dp0requirements.txt" --quiet >nul 2>&1
+python -m pip install -r "%~dp0requirements.txt" --user --quiet >nul 2>&1
 if !errorlevel! equ 0 (
     echo !STR_DEP_OK!
 ) else (
