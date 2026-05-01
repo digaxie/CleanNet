@@ -1,8 +1,9 @@
-$ErrorActionPreference = "Stop"
+﻿$ErrorActionPreference = "Stop"
 
 $root = Resolve-Path (Join-Path $PSScriptRoot "..")
 $distRoot = Join-Path $root "dist"
 $checksumPath = Join-Path $distRoot "SHA256SUMS.txt"
+$version = (Get-Content -LiteralPath (Join-Path $root "VERSION") -Raw).Trim()
 
 if (-not (Test-Path -LiteralPath $distRoot)) {
     throw "Missing dist directory: $distRoot"
@@ -10,7 +11,7 @@ if (-not (Test-Path -LiteralPath $distRoot)) {
 
 $targets = @(
     "CleanNet.exe",
-    "CleanNet-2.1.0-portable.zip"
+    "CleanNet-$version-portable.zip"
 )
 
 $lines = New-Object System.Collections.Generic.List[string]

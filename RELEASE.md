@@ -1,4 +1,4 @@
-# Release Guide
+﻿# Release Guide
 
 This repository is source-first. End-user binaries should normally be uploaded to GitHub Releases, not committed to the main branch.
 
@@ -23,8 +23,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_release.ps1
 
 Output:
 
-- `dist\CleanNet-2.1.0\`
-- `dist\CleanNet-2.1.0-portable.zip`
+- `dist\CleanNet-2.0\`
+- `dist\CleanNet-2.0-portable.zip`
 
 ## Build EXE
 
@@ -65,17 +65,17 @@ Output:
 Upload these files to GitHub Releases:
 
 - `dist\CleanNet.exe`
-- `dist\CleanNet-2.1.0-portable.zip`
+- `dist\CleanNet-2.0-portable.zip`
 - `dist\SHA256SUMS.txt`
 
 ## Suggested GitHub Release Text
 
 ```text
-CleanNet v2.1.0
+CleanNet v2.0
 
 Install options:
 1. CleanNet.exe - fastest path for normal users.
-2. CleanNet-2.1.0-portable.zip - readable source/BAT path for users who do not trust EXE files.
+2. CleanNet-2.0-portable.zip - readable source/BAT path for users who do not trust EXE files.
 
 Default public configuration includes Discord only.
 

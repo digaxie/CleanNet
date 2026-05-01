@@ -1,6 +1,6 @@
-# Privacy Policy
+﻿# Privacy Policy
 
-Languages: [English](#english) | [Türkçe](#türkçe) | [Deutsch](#deutsch)
+Languages: [English](#english) | [TÃ¼rkÃ§e](#tÃ¼rkÃ§e) | [Deutsch](#deutsch)
 
 ## English
 
@@ -61,60 +61,60 @@ Optional autostart writes:
 HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CleanNetDPIBypass
 ```
 
-## Türkçe
+## TÃ¼rkÃ§e
 
-CleanNet telemetrisiz ve yerel öncelikli olacak şekilde tasarlanmıştır.
+CleanNet telemetrisiz ve yerel Ã¶ncelikli olacak ÅŸekilde tasarlanmÄ±ÅŸtÄ±r.
 
-### Veri Toplama Özeti
+### Veri Toplama Ã–zeti
 
-| Kategori | Toplanır mı | Not |
+| Kategori | ToplanÄ±r mÄ± | Not |
 |---|---|---|
-| Kişisel bilgi | Hayır | Hesap, email, ad veya cihaz ID toplanmaz |
-| Analitik | Hayır | Analitik SDK veya beacon yok |
-| Crash report | Hayır | Hatalar yalnızca yerel loglanır |
-| Update check | Hayır | Arka planda update sunucusu yok |
-| Ayarlanan domainler | Yerel | Yerel `config.json` içinde tutulur |
-| Strateji sonuçları | Yerel | Yerel cache dosyalarında tutulur |
+| KiÅŸisel bilgi | HayÄ±r | Hesap, email, ad veya cihaz ID toplanmaz |
+| Analitik | HayÄ±r | Analitik SDK veya beacon yok |
+| Crash report | HayÄ±r | Hatalar yalnÄ±zca yerel loglanÄ±r |
+| Update check | HayÄ±r | Arka planda update sunucusu yok |
+| Ayarlanan domainler | Yerel | Yerel `config.json` iÃ§inde tutulur |
+| Strateji sonuÃ§larÄ± | Yerel | Yerel cache dosyalarÄ±nda tutulur |
 
-### Ağ Bağlantıları
+### AÄŸ BaÄŸlantÄ±larÄ±
 
-Normal kullanımda CleanNet şu dış bağlantıları yapar:
+Normal kullanÄ±mda CleanNet ÅŸu dÄ±ÅŸ baÄŸlantÄ±larÄ± yapar:
 
-| Hedef | Amaç |
+| Hedef | AmaÃ§ |
 |---|---|
-| `dns.google` | Ayarlı domainler için DNS over HTTPS |
+| `dns.google` | AyarlÄ± domainler iÃ§in DNS over HTTPS |
 | `cloudflare-dns.com` | DNS over HTTPS fallback |
-| Ping hedefi, varsayılan `1.1.1.1:443` | Gecikme ölçümü |
-| Ayarlanmış site IPleri | Kullanıcının proxy üzerinden geçen HTTPS bağlantısı |
+| Ping hedefi, varsayÄ±lan `1.1.1.1:443` | Gecikme Ã¶lÃ§Ã¼mÃ¼ |
+| AyarlanmÄ±ÅŸ site IPleri | KullanÄ±cÄ±nÄ±n proxy Ã¼zerinden geÃ§en HTTPS baÄŸlantÄ±sÄ± |
 
-CleanNet proje sahibine telemetri göndermez.
+CleanNet proje sahibine telemetri gÃ¶ndermez.
 
 ### Yerel Dosyalar
 
-| Dosya | İçerik |
+| Dosya | Ä°Ã§erik |
 |---|---|
-| `config.json` | Siteler, portlar, privacy/performance ayarları, proxy bypass girdileri |
-| `strategy_cache.json` | Öğrenilen çalışan strateji verisi |
-| `ai_strategy.json` | Adaptif strateji öğrenme verisi |
-| `stats.json` | Toplam sayaçlar |
+| `config.json` | Siteler, portlar, privacy/performance ayarlarÄ±, proxy bypass girdileri |
+| `strategy_cache.json` | Ã–ÄŸrenilen Ã§alÄ±ÅŸan strateji verisi |
+| `ai_strategy.json` | Adaptif strateji Ã¶ÄŸrenme verisi |
+| `stats.json` | Toplam sayaÃ§lar |
 | `bypass.log` | Warning/error disk logu |
-| `proxy_state.json` | Önceki Windows proxy yedeği |
+| `proxy_state.json` | Ã–nceki Windows proxy yedeÄŸi |
 
-CleanNet çalışmıyorken runtime dosyalarını silebilirsiniz. `config.json` silinirse ayarlar sıfırlanır.
+CleanNet Ã§alÄ±ÅŸmÄ±yorken runtime dosyalarÄ±nÄ± silebilirsiniz. `config.json` silinirse ayarlar sÄ±fÄ±rlanÄ±r.
 
 ### Loglar
 
-Disk logları varsayılan olarak azaltılmıştır. `DPI_BYPASS_LOG_HOSTS=1` ayarlanmadığı sürece warning/error disk loglarında gerçek hostname yerine hash kullanılır. Dashboard, mevcut oturum sorunlarını çözebilmeniz için daha detaylı logları bellekte tutar.
+Disk loglarÄ± varsayÄ±lan olarak azaltÄ±lmÄ±ÅŸtÄ±r. `DPI_BYPASS_LOG_HOSTS=1` ayarlanmadÄ±ÄŸÄ± sÃ¼rece warning/error disk loglarÄ±nda gerÃ§ek hostname yerine hash kullanÄ±lÄ±r. Dashboard, mevcut oturum sorunlarÄ±nÄ± Ã§Ã¶zebilmeniz iÃ§in daha detaylÄ± loglarÄ± bellekte tutar.
 
 ### Windows Registry
 
-CleanNet çalışırken kullanıcı seviyesinde proxy ayarlarını yazar:
+CleanNet Ã§alÄ±ÅŸÄ±rken kullanÄ±cÄ± seviyesinde proxy ayarlarÄ±nÄ± yazar:
 
 ```text
 HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings
 ```
 
-Opsiyonel autostart şuraya yazılır:
+Opsiyonel autostart ÅŸuraya yazÄ±lÄ±r:
 
 ```text
 HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CleanNetDPIBypass
@@ -128,7 +128,7 @@ CleanNet ist als telemetrieloses, lokal orientiertes Tool konzipiert.
 
 | Kategorie | Erfasst | Hinweis |
 |---|---|---|
-| Persönliche Daten | Nein | Kein Account, keine E-Mail, kein Name, keine Geräte-ID |
+| PersÃ¶nliche Daten | Nein | Kein Account, keine E-Mail, kein Name, keine GerÃ¤te-ID |
 | Analytik | Nein | Kein Analytics SDK oder Beacon |
 | Crash Reports | Nein | Fehler werden nur lokal geloggt |
 | Update Checks | Nein | Kein Hintergrund-Update-Server |
@@ -141,7 +141,7 @@ Normale ausgehende Verbindungen:
 
 | Ziel | Zweck |
 |---|---|
-| `dns.google` | DNS over HTTPS für konfigurierte Domains |
+| `dns.google` | DNS over HTTPS fÃ¼r konfigurierte Domains |
 | `cloudflare-dns.com` | DNS over HTTPS Fallback |
 | Ping-Ziel, Standard `1.1.1.1:443` | Latenzmessung |
 | Konfigurierte Website-IPs | Weiterleitung Ihrer eigenen HTTPS-Verbindung |
@@ -155,19 +155,19 @@ CleanNet sendet keine Telemetrie an den Projektbetreiber.
 | `config.json` | Websites, Ports, Privacy/Performance, Proxy Bypass |
 | `strategy_cache.json` | Gelernte Strategiedaten |
 | `ai_strategy.json` | Adaptive Strategiedaten |
-| `stats.json` | Aggregierte Zähler |
+| `stats.json` | Aggregierte ZÃ¤hler |
 | `bypass.log` | Warning/Error Disk-Log |
 | `proxy_state.json` | Backup des vorherigen Windows Proxy-Zustands |
 
-Generierte Runtime-Dateien können gelöscht werden, wenn CleanNet nicht läuft. Das Löschen von `config.json` setzt Einstellungen zurück.
+Generierte Runtime-Dateien kÃ¶nnen gelÃ¶scht werden, wenn CleanNet nicht lÃ¤uft. Das LÃ¶schen von `config.json` setzt Einstellungen zurÃ¼ck.
 
 ### Logs
 
-Disk-Logs sind standardmäßig minimiert. Echte Hostnamen werden in Warning/Error-Disk-Logs gehasht, außer `DPI_BYPASS_LOG_HOSTS=1` ist gesetzt. Das Dashboard hält detailliertere Logs nur im Speicher für die aktuelle Sitzung.
+Disk-Logs sind standardmÃ¤ÃŸig minimiert. Echte Hostnamen werden in Warning/Error-Disk-Logs gehasht, auÃŸer `DPI_BYPASS_LOG_HOSTS=1` ist gesetzt. Das Dashboard hÃ¤lt detailliertere Logs nur im Speicher fÃ¼r die aktuelle Sitzung.
 
 ### Windows Registry
 
-CleanNet schreibt während der Laufzeit Benutzer-Proxy-Einstellungen:
+CleanNet schreibt wÃ¤hrend der Laufzeit Benutzer-Proxy-Einstellungen:
 
 ```text
 HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings

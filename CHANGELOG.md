@@ -1,6 +1,6 @@
-# Changelog
+﻿# Changelog
 
-## 2.1.0 Public GitHub Package - 2026-05-01
+## 2.0 Public GitHub Package - 2026-05-01
 
 - Prepared a clean public repository package in a separate publishing folder.
 - Replaced the GitHub README with a full Turkish, English, and German end-user guide.
@@ -14,7 +14,7 @@
 - Synced Windows 11 LAN connection settings so the Settings app shows manual proxy as enabled.
 - Kept both user paths documented: `CleanNet.exe` for convenience and `CleanNet_Launcher.bat` / Python source for users who prefer auditable files.
 
-## 2.1.0 - 2026-04-29
+## 2.0 - 2026-04-29
 
 - Removed the retired third-party network integration and its obsolete config keys.
 - Split core runtime helpers into the `cleannet` package.

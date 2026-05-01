@@ -1,6 +1,6 @@
-# Security Policy
+﻿# Security Policy
 
-Languages: [English](#english) | [Türkçe](#türkçe) | [Deutsch](#deutsch)
+Languages: [English](#english) | [TÃ¼rkÃ§e](#tÃ¼rkÃ§e) | [Deutsch](#deutsch)
 
 ## English
 
@@ -56,7 +56,7 @@ Verify release files with:
 
 ```powershell
 Get-FileHash .\CleanNet.exe -Algorithm SHA256
-Get-FileHash .\CleanNet-2.1.0-portable.zip -Algorithm SHA256
+Get-FileHash .\CleanNet-2.0-portable.zip -Algorithm SHA256
 ```
 
 Compare hashes with `SHA256SUMS.txt` from the release.
@@ -77,35 +77,35 @@ Use GitHub Security Advisories if available. Include:
 
 Any local process can attempt to connect to `127.0.0.1:8888`. Do not expose the dashboard through port forwarding or a reverse proxy. Keep CleanNet bound to localhost.
 
-## Türkçe
+## TÃ¼rkÃ§e
 
-### Desteklenen Sürüm
+### Desteklenen SÃ¼rÃ¼m
 
-Güvenlik düzeltmeleri yalnızca en güncel public release için desteklenir.
+GÃ¼venlik dÃ¼zeltmeleri yalnÄ±zca en gÃ¼ncel public release iÃ§in desteklenir.
 
-| Sürüm | Destek |
+| SÃ¼rÃ¼m | Destek |
 |---|---|
 | `2.1.x` | Evet |
-| Eski sürümler | Hayır |
+| Eski sÃ¼rÃ¼mler | HayÄ±r |
 
-### Güvenlik Modeli
+### GÃ¼venlik Modeli
 
-CleanNet yalnızca yerel çalışan bir Windows aracıdır.
+CleanNet yalnÄ±zca yerel Ã§alÄ±ÅŸan bir Windows aracÄ±dÄ±r.
 
-| Bileşen | Adres | Erişim |
+| BileÅŸen | Adres | EriÅŸim |
 |---|---|---|
 | HTTP proxy | `127.0.0.1:8080` | Sadece yerel makine |
 | Web dashboard | `127.0.0.1:8888` | Sadece yerel makine |
 
-CleanNet driver kurmaz, HTTPS trafiğini çözmez ve normal kullanım için yönetici izni istemez.
+CleanNet driver kurmaz, HTTPS trafiÄŸini Ã§Ã¶zmez ve normal kullanÄ±m iÃ§in yÃ¶netici izni istemez.
 
-### CleanNet Neye Erişebilir
+### CleanNet Neye EriÅŸebilir
 
-- Yerel proxyye gönderilen tarayıcı/uygulama trafiği.
-- `config.json` içindeki domainler için DNS over HTTPS istekleri.
-- Kullanıcı seviyesindeki Windows proxy ayarları.
-- İsteğe bağlı kullanıcı seviyesinde autostart registry girdisi.
-- Uygulama klasöründeki yerel dosyalar.
+- Yerel proxyye gÃ¶nderilen tarayÄ±cÄ±/uygulama trafiÄŸi.
+- `config.json` iÃ§indeki domainler iÃ§in DNS over HTTPS istekleri.
+- KullanÄ±cÄ± seviyesindeki Windows proxy ayarlarÄ±.
+- Ä°steÄŸe baÄŸlÄ± kullanÄ±cÄ± seviyesinde autostart registry girdisi.
+- Uygulama klasÃ¶rÃ¼ndeki yerel dosyalar.
 
 ### CleanNet Ne Yapmaz
 
@@ -118,50 +118,50 @@ CleanNet driver kurmaz, HTTPS trafiğini çözmez ve normal kullanım için yön
 - Sertifika otoritesi kurulumu yok.
 - HTTPS MITM/decryption yok.
 
-### EXE Güven Notu
+### EXE GÃ¼ven Notu
 
-EXE, bu repodaki aynı Python kaynak kodundan PyInstaller ile üretilir. Bazı antivirüs veya SmartScreen araçları imzasız PyInstaller uygulamalarına uyarı verebilir. EXE’ye güvenmiyorsanız portable ZIP kullanın veya repoyu klonlayıp şunu çalıştırın:
+EXE, bu repodaki aynÄ± Python kaynak kodundan PyInstaller ile Ã¼retilir. BazÄ± antivirÃ¼s veya SmartScreen araÃ§larÄ± imzasÄ±z PyInstaller uygulamalarÄ±na uyarÄ± verebilir. EXEâ€™ye gÃ¼venmiyorsanÄ±z portable ZIP kullanÄ±n veya repoyu klonlayÄ±p ÅŸunu Ã§alÄ±ÅŸtÄ±rÄ±n:
 
 ```powershell
 python -m pip install -r requirements.txt --user
 pythonw bypass_silent.pyw
 ```
 
-Release dosyalarını şu komutla doğrulayın:
+Release dosyalarÄ±nÄ± ÅŸu komutla doÄŸrulayÄ±n:
 
 ```powershell
 Get-FileHash .\CleanNet.exe -Algorithm SHA256
-Get-FileHash .\CleanNet-2.1.0-portable.zip -Algorithm SHA256
+Get-FileHash .\CleanNet-2.0-portable.zip -Algorithm SHA256
 ```
 
-Hash çıktısını release içindeki `SHA256SUMS.txt` ile karşılaştırın.
+Hash Ã§Ä±ktÄ±sÄ±nÄ± release iÃ§indeki `SHA256SUMS.txt` ile karÅŸÄ±laÅŸtÄ±rÄ±n.
 
-### Güvenlik Açığı Bildirme
+### GÃ¼venlik AÃ§Ä±ÄŸÄ± Bildirme
 
-Güvenlik açıkları için public issue açmayın.
+GÃ¼venlik aÃ§Ä±klarÄ± iÃ§in public issue aÃ§mayÄ±n.
 
-Mümkünse GitHub Security Advisories kullanın. Şunları ekleyin:
+MÃ¼mkÃ¼nse GitHub Security Advisories kullanÄ±n. ÅžunlarÄ± ekleyin:
 
-- Etkilenen sürüm.
-- Tekrar üretme adımları.
-- Beklenen ve gerçek davranış.
+- Etkilenen sÃ¼rÃ¼m.
+- Tekrar Ã¼retme adÄ±mlarÄ±.
+- Beklenen ve gerÃ§ek davranÄ±ÅŸ.
 - Etki.
-- Özel domainler temizlenmiş ilgili loglar.
+- Ã–zel domainler temizlenmiÅŸ ilgili loglar.
 
-### Yerel Risk Notları
+### Yerel Risk NotlarÄ±
 
-Her yerel process `127.0.0.1:8888` adresine bağlanmayı deneyebilir. Dashboardu port forwarding veya reverse proxy ile dış ağa açmayın. CleanNet localhost’a bağlı kalmalıdır.
+Her yerel process `127.0.0.1:8888` adresine baÄŸlanmayÄ± deneyebilir. Dashboardu port forwarding veya reverse proxy ile dÄ±ÅŸ aÄŸa aÃ§mayÄ±n. CleanNet localhostâ€™a baÄŸlÄ± kalmalÄ±dÄ±r.
 
 ## Deutsch
 
-### Unterstützte Version
+### UnterstÃ¼tzte Version
 
-Sicherheitsfixes werden nur für das aktuelle öffentliche Release unterstützt.
+Sicherheitsfixes werden nur fÃ¼r das aktuelle Ã¶ffentliche Release unterstÃ¼tzt.
 
-| Version | Unterstützt |
+| Version | UnterstÃ¼tzt |
 |---|---|
 | `2.1.x` | Ja |
-| Ältere Versionen | Nein |
+| Ã„ltere Versionen | Nein |
 
 ### Sicherheitsmodell
 
@@ -172,14 +172,14 @@ CleanNet ist ein lokal laufendes Windows-Tool.
 | HTTP Proxy | `127.0.0.1:8080` | Nur lokaler Rechner |
 | Web Dashboard | `127.0.0.1:8888` | Nur lokaler Rechner |
 
-CleanNet installiert keine Treiber, entschlüsselt kein HTTPS und benötigt für normale Nutzung keine Administratorrechte.
+CleanNet installiert keine Treiber, entschlÃ¼sselt kein HTTPS und benÃ¶tigt fÃ¼r normale Nutzung keine Administratorrechte.
 
 ### Worauf CleanNet Zugriff Hat
 
 - Browser/App-Verkehr, der explizit an den lokalen Proxy gesendet wird.
-- DNS-over-HTTPS-Anfragen für Domains in `config.json`.
+- DNS-over-HTTPS-Anfragen fÃ¼r Domains in `config.json`.
 - Benutzerbezogene Windows Proxy-Einstellungen.
-- Optionale Autostart-Registry-Einträge im Benutzerkontext.
+- Optionale Autostart-Registry-EintrÃ¤ge im Benutzerkontext.
 - Lokale Dateien im Anwendungsverzeichnis.
 
 ### Was CleanNet Nicht Macht
@@ -191,38 +191,38 @@ CleanNet installiert keine Treiber, entschlüsselt kein HTTPS und benötigt für
 - Kein Remote Dashboard.
 - Kein Kernel-Treiber.
 - Keine Zertifizierungsstelle.
-- Keine HTTPS-MITM-Entschlüsselung.
+- Keine HTTPS-MITM-EntschlÃ¼sselung.
 
 ### EXE-Vertrauen
 
-Die EXE wird mit PyInstaller aus demselben Python-Quellcode in diesem Repository gebaut. Antivirus oder SmartScreen können bei unsignierten PyInstaller-Apps warnen. Wenn Sie der EXE nicht vertrauen, verwenden Sie das portable ZIP oder klonen Sie das Repository und starten:
+Die EXE wird mit PyInstaller aus demselben Python-Quellcode in diesem Repository gebaut. Antivirus oder SmartScreen kÃ¶nnen bei unsignierten PyInstaller-Apps warnen. Wenn Sie der EXE nicht vertrauen, verwenden Sie das portable ZIP oder klonen Sie das Repository und starten:
 
 ```powershell
 python -m pip install -r requirements.txt --user
 pythonw bypass_silent.pyw
 ```
 
-Release-Dateien prüfen:
+Release-Dateien prÃ¼fen:
 
 ```powershell
 Get-FileHash .\CleanNet.exe -Algorithm SHA256
-Get-FileHash .\CleanNet-2.1.0-portable.zip -Algorithm SHA256
+Get-FileHash .\CleanNet-2.0-portable.zip -Algorithm SHA256
 ```
 
 Vergleichen Sie die Hashes mit `SHA256SUMS.txt` im Release.
 
-### Sicherheitslücke Melden
+### SicherheitslÃ¼cke Melden
 
-Bitte keine öffentlichen Issues für Sicherheitslücken öffnen.
+Bitte keine Ã¶ffentlichen Issues fÃ¼r SicherheitslÃ¼cken Ã¶ffnen.
 
-Nutzen Sie GitHub Security Advisories, falls verfügbar. Bitte angeben:
+Nutzen Sie GitHub Security Advisories, falls verfÃ¼gbar. Bitte angeben:
 
 - Betroffene Version.
 - Schritte zur Reproduktion.
-- Erwartetes und tatsächliches Verhalten.
+- Erwartetes und tatsÃ¤chliches Verhalten.
 - Auswirkungen.
 - Relevante Logs ohne private Domains.
 
 ### Lokale Risiken
 
-Jeder lokale Prozess kann versuchen, `127.0.0.1:8888` zu erreichen. Veröffentlichen Sie das Dashboard nicht über Port Forwarding oder Reverse Proxy. CleanNet sollte an localhost gebunden bleiben.
+Jeder lokale Prozess kann versuchen, `127.0.0.1:8888` zu erreichen. VerÃ¶ffentlichen Sie das Dashboard nicht Ã¼ber Port Forwarding oder Reverse Proxy. CleanNet sollte an localhost gebunden bleiben.

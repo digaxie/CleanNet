@@ -1,10 +1,10 @@
-#define MyAppName "CleanNet"
-#define MyAppVersion "2.1.0"
+﻿#define MyAppName "CleanNet"
+#define MyAppVersion "2.0"
 #define MyAppPublisher "CleanNet"
 #define MyAppExeName "CleanNet.exe"
 
 [Setup]
-AppId={{8A6E54DF-A28B-49F8-8DFB-CLEANNET210}}
+AppId={{8A6E54DF-A28B-49F8-8DFB-CLEANNET200}}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
