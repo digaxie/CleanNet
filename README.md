@@ -1,8 +1,8 @@
-﻿# CleanNet
+# CleanNet
 
 CleanNet is a local, Windows-focused DPI bypass tool for people who want a transparent alternative to opaque VPN-like utilities. It runs on your own computer, listens only on `127.0.0.1`, and routes selected HTTPS connections through a local proxy that can fragment TLS ClientHello traffic.
 
-Languages: [English](#english) | [TÃ¼rkÃ§e](#tÃ¼rkÃ§e) | [Deutsch](#deutsch)
+Languages: [English](#english) | [Türkçe](#türkçe) | [Deutsch](#deutsch)
 
 Current version: `v2.0`
 
@@ -231,180 +231,180 @@ Use CleanNet only where you are allowed to do so. The project is provided for ed
 
 ---
 
-## TÃ¼rkÃ§e
+## Türkçe
 
 ### CleanNet Ne Yapar
 
-CleanNet, Windows Ã¼zerinde yerel Ã§alÄ±ÅŸan bir DPI bypass aracÄ±dÄ±r. SeÃ§ili HTTPS baÄŸlantÄ±larÄ±nda TLS ClientHello paketini parÃ§alayarak SNI/DPI filtrelerine karÅŸÄ± Ã§alÄ±ÅŸÄ±r.
+CleanNet, Windows üzerinde yerel çalışan bir DPI bypass aracıdır. Seçili HTTPS bağlantılarında TLS ClientHello paketini parçalayarak SNI/DPI filtrelerine karşı çalışır.
 
 ```text
-TarayÄ±cÄ± veya uygulama -> CleanNet proxy 127.0.0.1:8080 -> parÃ§alanmÄ±ÅŸ TLS ClientHello -> hedef sunucu
+Tarayıcı veya uygulama -> CleanNet proxy 127.0.0.1:8080 -> parçalanmış TLS ClientHello -> hedef sunucu
 Dashboard              -> http://127.0.0.1:8888
 ```
 
 Yapabildikleri:
 
-- CleanNet Ã§alÄ±ÅŸÄ±rken Windows kullanÄ±cÄ± proxy ayarÄ±nÄ± yÃ¶netir.
-- KapanÄ±rken Ã¶nceki proxy durumunu geri yÃ¼kler.
-- AyarlÄ± domainleri DNS over HTTPS ile Ã§Ã¶zÃ¼mler.
-- DNS/SNI gizliliÄŸini bu tekniÄŸin izin verdiÄŸi Ã¶lÃ§Ã¼de korur.
-- Site baÅŸÄ±na en iyi bypass stratejisini Ã¶ÄŸrenir.
-- Dashboard Ã¼zerinde canlÄ± durum, ping, log, diagnostics ve aÄŸ akÄ±ÅŸÄ± tablosu gÃ¶sterir.
-- KullanÄ±cÄ±nÄ±n dashboarddan site ve proxy exception eklemesine izin verir.
-- HazÄ±r EXE ile veya okunabilir Python kaynak dosyalarÄ±yla Ã§alÄ±ÅŸÄ±r.
+- CleanNet çalışırken Windows kullanıcı proxy ayarını yönetir.
+- Kapanırken önceki proxy durumunu geri yükler.
+- Ayarlı domainleri DNS over HTTPS ile çözümler.
+- DNS/SNI gizliliğini bu tekniğin izin verdiği ölçüde korur.
+- Site başına en iyi bypass stratejisini öğrenir.
+- Dashboard üzerinde canlı durum, ping, log, diagnostics ve ağ akışı tablosu gösterir.
+- Kullanıcının dashboarddan site ve proxy exception eklemesine izin verir.
+- Hazır EXE ile veya okunabilir Python kaynak dosyalarıyla çalışır.
 
-YapmadÄ±klarÄ±:
+Yapmadıkları:
 
-- VPN deÄŸildir.
-- IP adresinizi deÄŸiÅŸtirmez.
-- HTTPS trafiÄŸini Ã§Ã¶zmez.
+- VPN değildir.
+- IP adresinizi değiştirmez.
+- HTTPS trafiğini çözmez.
 - Driver kurmaz.
-- Normal kullanÄ±mda yÃ¶netici izni istemez.
-- Telemetri, analitik, crash report veya update check gÃ¶ndermez.
+- Normal kullanımda yönetici izni istemez.
+- Telemetri, analitik, crash report veya update check göndermez.
 
-### Ä°ndirme ve Kurulum
+### İndirme ve Kurulum
 
-GÃ¼ven tercihinize gÃ¶re Ã¼Ã§ yol var.
+Güven tercihinize göre üç yol var.
 
-| SeÃ§enek | Kimler iÃ§in | Ã‡alÄ±ÅŸtÄ±rÄ±lacak dosya |
+| Seçenek | Kimler için | Çalıştırılacak dosya |
 |---|---|---|
-| EXE release | En hÄ±zlÄ± kurulum | GitHub Releases iÃ§indeki `CleanNet.exe` |
-| Portable kaynak ZIP | DosyalarÄ± gÃ¶rmek isteyen kullanÄ±cÄ± | `CleanNet_Launcher.bat` |
-| Manuel Python | GeliÅŸtirici ve denetleyen kullanÄ±cÄ± | `pythonw bypass_silent.pyw` |
+| EXE release | En hızlı kurulum | GitHub Releases içindeki `CleanNet.exe` |
+| Portable kaynak ZIP | Dosyaları görmek isteyen kullanıcı | `CleanNet_Launcher.bat` |
+| Manuel Python | Geliştirici ve denetleyen kullanıcı | `pythonw bypass_silent.pyw` |
 
-#### SeÃ§enek 1: EXE
+#### Seçenek 1: EXE
 
-1. GitHub Releases sayfasÄ±nÄ± aÃ§Ä±n.
-2. `CleanNet.exe` dosyasÄ±nÄ± indirin.
-3. Ã‡alÄ±ÅŸtÄ±rÄ±n.
-4. Dashboard otomatik aÃ§Ä±lmazsa `http://127.0.0.1:8888` adresini aÃ§Ä±n.
+1. GitHub Releases sayfasını açın.
+2. `CleanNet.exe` dosyasını indirin.
+3. Çalıştırın.
+4. Dashboard otomatik açılmazsa `http://127.0.0.1:8888` adresini açın.
 
-Windows SmartScreen imzasÄ±z aÃ§Ä±k kaynak EXE dosyalarÄ± iÃ§in uyarÄ± gÃ¶sterebilir. Bu uyarÄ± dosyanÄ±n ticari code-signing sertifikasÄ± olmadÄ±ÄŸÄ±nÄ± belirtir; tek baÅŸÄ±na zararlÄ± olduÄŸu anlamÄ±na gelmez. EXE dosyasÄ±na gÃ¼venmiyorsanÄ±z SeÃ§enek 2 veya SeÃ§enek 3 kullanÄ±n.
+Windows SmartScreen imzasız açık kaynak EXE dosyaları için uyarı gösterebilir. Bu uyarı dosyanın ticari code-signing sertifikası olmadığını belirtir; tek başına zararlı olduğu anlamına gelmez. EXE dosyasına güvenmiyorsanız Seçenek 2 veya Seçenek 3 kullanın.
 
-#### SeÃ§enek 2: Portable Kaynak ZIP
+#### Seçenek 2: Portable Kaynak ZIP
 
-1. GitHub Releases iÃ§inden `CleanNet-2.0-portable.zip` dosyasÄ±nÄ± indirin.
-2. Normal bir klasÃ¶re Ã§Ä±karÄ±n, Ã¶rnek: `C:\Tools\CleanNet`.
-3. Ã‡alÄ±ÅŸtÄ±rÄ±n:
+1. GitHub Releases içinden `CleanNet-2.0-portable.zip` dosyasını indirin.
+2. Normal bir klasöre çıkarın, örnek: `C:\Tools\CleanNet`.
+3. Çalıştırın:
 
 ```bat
 CleanNet_Launcher.bat
 ```
 
-Launcher Python baÄŸÄ±mlÄ±lÄ±klarÄ±nÄ± `pip --user` ile kurar, `pythonw bypass_silent.pyw` baÅŸlatÄ±r ve dashboardu aÃ§ar.
+Launcher Python bağımlılıklarını `pip --user` ile kurar, `pythonw bypass_silent.pyw` başlatır ve dashboardu açar.
 
-#### SeÃ§enek 3: Manuel Python
+#### Seçenek 3: Manuel Python
 
 ```powershell
 python -m pip install -r requirements.txt --user
 pythonw bypass_silent.pyw
 ```
 
-Sonra ÅŸu adresi aÃ§Ä±n:
+Sonra şu adresi açın:
 
 ```text
 http://127.0.0.1:8888
 ```
 
-### Ä°ndirdiÄŸiniz DosyayÄ± DoÄŸrulama
+### İndirdiğiniz Dosyayı Doğrulama
 
-Release dosyalarÄ± iÃ§in SHA-256 kontrolÃ¼ yapÄ±n:
+Release dosyaları için SHA-256 kontrolü yapın:
 
 ```powershell
 Get-FileHash .\CleanNet.exe -Algorithm SHA256
 Get-FileHash .\CleanNet-2.0-portable.zip -Algorithm SHA256
 ```
 
-Ã‡Ä±ktÄ±yÄ± release ekindeki `SHA256SUMS.txt` ile karÅŸÄ±laÅŸtÄ±rÄ±n.
+Çıktıyı release ekindeki `SHA256SUMS.txt` ile karşılaştırın.
 
-Maksimum ÅŸeffaflÄ±k istiyorsanÄ±z portable ZIP veya kaynak kodu klonlama yolunu kullanÄ±n. Kaynak yoluyla EXE aynÄ± runtime modÃ¼llerini kullanÄ±r.
+Maksimum şeffaflık istiyorsanız portable ZIP veya kaynak kodu klonlama yolunu kullanın. Kaynak yoluyla EXE aynı runtime modüllerini kullanır.
 
-### Ä°lk Ã‡alÄ±ÅŸtÄ±rma
+### İlk Çalıştırma
 
-Public varsayÄ±lan yapÄ±landÄ±rma:
+Public varsayılan yapılandırma:
 
 - Site: Discord
 - Proxy: `127.0.0.1:8080`
 - Dashboard: `127.0.0.1:8888`
-- Low latency mode: aÃ§Ä±k
-- Background AI training: kapalÄ±
-- DNS/SNI privacy mode: aÃ§Ä±k
+- Low latency mode: açık
+- Background AI training: kapalı
+- DNS/SNI privacy mode: açık
 
-BaÅŸka siteleri dashboarddan kendiniz eklersiniz. EklediÄŸiniz siteler yerel `config.json` dosyanÄ±zda kalÄ±r.
+Başka siteleri dashboarddan kendiniz eklersiniz. Eklediğiniz siteler yerel `config.json` dosyanızda kalır.
 
 ### Dashboard
 
-Dashboard yalnÄ±zca yerel bilgisayardan eriÅŸilebilir:
+Dashboard yalnızca yerel bilgisayardan erişilebilir:
 
 ```text
 http://127.0.0.1:8888
 ```
 
-Ana bÃ¶lÃ¼mler:
+Ana bölümler:
 
-- Overview: durum, ping, proxy sahipliÄŸi ve runtime saÄŸlÄ±ÄŸÄ±.
+- Overview: durum, ping, proxy sahipliği ve runtime sağlığı.
 - Sites: siteler, domainler, strategy lock ve test aksiyonu.
-- Performance: low latency, ping target, refresh interval, canlÄ± PC baÄŸlantÄ±larÄ±, proxy exception.
-- AI Engine: strateji Ã¶ÄŸrenme ve eÄŸitim kontrolleri.
+- Performance: low latency, ping target, refresh interval, canlı PC bağlantıları, proxy exception.
+- AI Engine: strateji öğrenme ve eğitim kontrolleri.
 - Settings: proxy bypass presetleri, import/export, autostart, diagnostics.
-- Logs: mevcut oturuma ait bellek iÃ§i operasyon logu.
+- Logs: mevcut oturuma ait bellek içi operasyon logu.
 
 ### Site Ekleme
 
-1. Dashboardu aÃ§Ä±n.
-2. Sites bÃ¶lÃ¼mÃ¼ne gidin.
+1. Dashboardu açın.
+2. Sites bölümüne gidin.
 3. Domain girin.
-4. Resolve yapÄ±n.
-5. Confirm and Add seÃ§in.
-6. Site testini Ã§alÄ±ÅŸtÄ±rÄ±n.
+4. Resolve yapın.
+5. Confirm and Add seçin.
+6. Site testini çalıştırın.
 
-Ä°lk baÄŸlantÄ± strateji keÅŸfi yÃ¼zÃ¼nden daha uzun sÃ¼rebilir. Ã‡alÄ±ÅŸan strateji daha sonra yerel cache'e alÄ±nÄ±r.
+İlk bağlantı strateji keşfi yüzünden daha uzun sürebilir. Çalışan strateji daha sonra yerel cache'e alınır.
 
-### Oyun ve DÃ¼ÅŸÃ¼k Gecikme
+### Oyun ve Düşük Gecikme
 
-Oyunlar, launcherlar, ses uygulamalarÄ±, anti-cheat servisleri ve gecikmeye hassas uygulamalar genelde CleanNet Ã¼zerinden geÃ§memelidir.
+Oyunlar, launcherlar, ses uygulamaları, anti-cheat servisleri ve gecikmeye hassas uygulamalar genelde CleanNet üzerinden geçmemelidir.
 
-Performance -> Live PC Connections bÃ¶lÃ¼mÃ¼nÃ¼ kullanÄ±n:
+Performance -> Live PC Connections bölümünü kullanın:
 
-1. Process veya remote endpoint satÄ±rÄ±nÄ± bulun.
-2. Tek endpoint iÃ§in Add Exception, o an gÃ¶rÃ¼nen process endpointleri iÃ§in Add All For Process seÃ§in.
+1. Process veya remote endpoint satırını bulun.
+2. Tek endpoint için Add Exception, o an görünen process endpointleri için Add All For Process seçin.
 3. CleanNet girdiyi `proxy_bypass` listesine yazar.
 4. Windows proxy override yenilenir.
 
-CleanNet gerÃ§ek process-level Windows proxy exception oluÅŸturamaz. Windows proxy bypass kurallarÄ± host/IP/domain bazlÄ±dÄ±r. Dashboard bu kurallarÄ± canlÄ± aÄŸ akÄ±ÅŸlarÄ±ndan Ã¼retmenize yardÄ±m eder.
+CleanNet gerçek process-level Windows proxy exception oluşturamaz. Windows proxy bypass kuralları host/IP/domain bazlıdır. Dashboard bu kuralları canlı ağ akışlarından üretmenize yardım eder.
 
-### GÃ¼venlik Modeli
+### Güvenlik Modeli
 
-| Alan | DeÄŸer |
+| Alan | Değer |
 |---|---|
 | Proxy bind adresi | `127.0.0.1` |
 | Dashboard bind adresi | `127.0.0.1` |
 | Normal admin gereksinimi | Yok |
 | Driver kurulumu | Yok |
-| HTTPS Ã§Ã¶zme | Yok |
+| HTTPS çözme | Yok |
 | Telemetri | Yok |
 | Harici UI assetleri | Yok |
 
-CleanNet yalnÄ±zca kullanÄ±cÄ± seviyesindeki Windows proxy ayarlarÄ±nÄ± yazar:
+CleanNet yalnızca kullanıcı seviyesindeki Windows proxy ayarlarını yazar:
 
 ```text
 HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings
 ```
 
-Ã–nceki proxy durumunu `proxy_state.json` iÃ§ine yedekler ve normal kapanÄ±ÅŸta geri yÃ¼kler. Ã‡alÄ±ÅŸma sÄ±rasÄ±nda proxy sahipliÄŸi bozulursa watchdog tekrar dÃ¼zeltir.
+Önceki proxy durumunu `proxy_state.json` içine yedekler ve normal kapanışta geri yükler. Çalışma sırasında proxy sahipliği bozulursa watchdog tekrar düzeltir.
 
 ### Gizlilik
 
-| Dosya | AmaÃ§ | Silinebilir mi |
+| Dosya | Amaç | Silinebilir mi |
 |---|---|---|
-| `config.json` | Site, port, privacy/performance ayarlarÄ±, proxy bypass girdileri | Evet, ayarlar sÄ±fÄ±rlanÄ±r |
-| `strategy_cache.json` | Ã–ÄŸrenilen strateji verisi | Evet |
-| `ai_strategy.json` | Adaptif strateji Ã¶ÄŸrenme verisi | Evet |
-| `stats.json` | Toplam sayaÃ§lar | Evet |
+| `config.json` | Site, port, privacy/performance ayarları, proxy bypass girdileri | Evet, ayarlar sıfırlanır |
+| `strategy_cache.json` | Öğrenilen strateji verisi | Evet |
+| `ai_strategy.json` | Adaptif strateji öğrenme verisi | Evet |
+| `stats.json` | Toplam sayaçlar | Evet |
 | `bypass.log` | Warning/error disk logu | Evet |
-| `proxy_state.json` | Ã–nceki Windows proxy yedeÄŸi | Ã‡alÄ±ÅŸÄ±rken genelde hayÄ±r |
+| `proxy_state.json` | Önceki Windows proxy yedeği | Çalışırken genelde hayır |
 
-Disk loglarÄ± varsayÄ±lan olarak azaltÄ±lmÄ±ÅŸtÄ±r. DetaylÄ± loglar dashboard iÃ§in bellekte tutulur ve process kapanÄ±nca kaybolur.
+Disk logları varsayılan olarak azaltılmıştır. Detaylı loglar dashboard için bellekte tutulur ve process kapanınca kaybolur.
 
 ### Kaynaktan Build
 
@@ -420,16 +420,16 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_release.ps1
 
 | Sorun | Kontrol |
 |---|---|
-| Dashboard aÃ§Ä±lmÄ±yor | `127.0.0.1:8888` adresini ve port Ã§akÄ±ÅŸmasÄ±nÄ± kontrol edin. |
-| Site aÃ§Ä±lmÄ±yor | Dashboarddan site testini Ã§alÄ±ÅŸtÄ±rÄ±n, strateji keÅŸfini bekleyin, loglarÄ± kontrol edin. |
-| Discord yÃ¶nlenmiyor | Overview/Diagnostics iÃ§inde Windows proxy CleanNet'e ait mi kontrol edin. |
-| Oyunlarda ping artÄ±yor | Oyun endpointini veya process endpointlerini proxy exception listesine ekleyin. |
-| Force-close sonrasÄ± internet bozuldu | `CleanTraces.ps1` Ã§alÄ±ÅŸtÄ±rÄ±n veya Windows proxy ayarÄ±nÄ± manuel kapatÄ±n. |
-| EXE'ye gÃ¼venmiyorum | Portable ZIP veya kaynak kod + `CleanNet_Launcher.bat` yolunu kullanÄ±n. |
+| Dashboard açılmıyor | `127.0.0.1:8888` adresini ve port çakışmasını kontrol edin. |
+| Site açılmıyor | Dashboarddan site testini çalıştırın, strateji keşfini bekleyin, logları kontrol edin. |
+| Discord yönlenmiyor | Overview/Diagnostics içinde Windows proxy CleanNet'e ait mi kontrol edin. |
+| Oyunlarda ping artıyor | Oyun endpointini veya process endpointlerini proxy exception listesine ekleyin. |
+| Force-close sonrası internet bozuldu | `CleanTraces.ps1` çalıştırın veya Windows proxy ayarını manuel kapatın. |
+| EXE'ye güvenmiyorum | Portable ZIP veya kaynak kod + `CleanNet_Launcher.bat` yolunu kullanın. |
 
 ### Yasal Not
 
-CleanNet'i yalnÄ±zca kullanÄ±mÄ±na izin verilen koÅŸullarda kullanÄ±n. Proje eÄŸitim, birlikte Ã§alÄ±ÅŸabilirlik ve kiÅŸisel aÄŸ sorun giderme amacÄ±yla sunulur. Yerel yasa, kurum politikasÄ± ve hizmet ÅŸartlarÄ±ndan kullanÄ±cÄ± sorumludur.
+CleanNet'i yalnızca kullanımına izin verilen koşullarda kullanın. Proje eğitim, birlikte çalışabilirlik ve kişisel ağ sorun giderme amacıyla sunulur. Yerel yasa, kurum politikası ve hizmet şartlarından kullanıcı sorumludur.
 
 ---
 
@@ -437,7 +437,7 @@ CleanNet'i yalnÄ±zca kullanÄ±mÄ±na izin verilen koÅŸullarda kullanÄ±n.
 
 ### Was CleanNet Macht
 
-CleanNet ist ein lokal laufendes DPI-Bypass-Tool fÃ¼r Windows. FÃ¼r ausgewÃ¤hlte HTTPS-Verbindungen fragmentiert es den TLS ClientHello, um SNI/DPI-Filter zu umgehen.
+CleanNet ist ein lokal laufendes DPI-Bypass-Tool für Windows. Für ausgewählte HTTPS-Verbindungen fragmentiert es den TLS ClientHello, um SNI/DPI-Filter zu umgehen.
 
 ```text
 Browser oder App -> CleanNet Proxy 127.0.0.1:8080 -> fragmentierter TLS ClientHello -> Zielserver
@@ -446,40 +446,40 @@ Dashboard        -> http://127.0.0.1:8888
 
 CleanNet kann:
 
-- WÃ¤hrend der Laufzeit den Windows-Benutzerproxy setzen.
+- Während der Laufzeit den Windows-Benutzerproxy setzen.
 - Beim Beenden den vorherigen Proxyzustand wiederherstellen.
-- Konfigurierte Domains per DNS over HTTPS auflÃ¶sen.
-- DNS/SNI-Verarbeitung soweit mÃ¶glich verbergen.
+- Konfigurierte Domains per DNS over HTTPS auflösen.
+- DNS/SNI-Verarbeitung soweit möglich verbergen.
 - Pro Website die beste Bypass-Strategie lernen.
-- Status, Latenz, Logs, Diagnosen und Live-NetzwerkflÃ¼sse im Dashboard zeigen.
-- Websites und Proxy-Ausnahmen Ã¼ber das Dashboard verwalten.
+- Status, Latenz, Logs, Diagnosen und Live-Netzwerkflüsse im Dashboard zeigen.
+- Websites und Proxy-Ausnahmen über das Dashboard verwalten.
 - Als fertige EXE oder direkt aus lesbarem Python-Quellcode laufen.
 
 CleanNet kann nicht:
 
 - Als VPN arbeiten.
-- Die Ã¶ffentliche IP-Adresse Ã¤ndern.
-- HTTPS-Verkehr entschlÃ¼sseln.
+- Die öffentliche IP-Adresse ändern.
+- HTTPS-Verkehr entschlüsseln.
 - Treiber installieren.
-- FÃ¼r normale Nutzung Administratorrechte verlangen.
+- Für normale Nutzung Administratorrechte verlangen.
 - Telemetrie, Analytik, Crash Reports oder Update Checks senden.
 
 ### Download und Installation
 
-WÃ¤hlen Sie den Weg, dem Sie vertrauen.
+Wählen Sie den Weg, dem Sie vertrauen.
 
-| Option | Geeignet fÃ¼r | AusfÃ¼hren |
+| Option | Geeignet für | Ausführen |
 |---|---|---|
 | EXE Release | Schnellste Installation | `CleanNet.exe` aus GitHub Releases |
-| Portable Source ZIP | Nutzer, die Dateien prÃ¼fen mÃ¶chten | `CleanNet_Launcher.bat` |
+| Portable Source ZIP | Nutzer, die Dateien prüfen möchten | `CleanNet_Launcher.bat` |
 | Manuelles Python | Entwickler und Auditoren | `pythonw bypass_silent.pyw` |
 
 #### Option 1: EXE
 
-1. Ã–ffnen Sie die GitHub Releases Seite.
+1. Öffnen Sie die GitHub Releases Seite.
 2. Laden Sie `CleanNet.exe` herunter.
 3. Starten Sie die Datei.
-4. Falls das Dashboard nicht automatisch Ã¶ffnet, Ã¶ffnen Sie `http://127.0.0.1:8888`.
+4. Falls das Dashboard nicht automatisch öffnet, öffnen Sie `http://127.0.0.1:8888`.
 
 Windows SmartScreen kann bei unsignierten Open-Source-EXE-Dateien warnen. Diese Warnung bedeutet, dass keine kommerzielle Code-Signing-Signatur vorhanden ist. Wenn Sie der EXE nicht vertrauen, verwenden Sie Option 2 oder Option 3.
 
@@ -493,7 +493,7 @@ Windows SmartScreen kann bei unsignierten Open-Source-EXE-Dateien warnen. Diese 
 CleanNet_Launcher.bat
 ```
 
-Der Launcher installiert Python-AbhÃ¤ngigkeiten mit `pip --user`, startet `pythonw bypass_silent.pyw` und Ã¶ffnet das Dashboard.
+Der Launcher installiert Python-Abhängigkeiten mit `pip --user`, startet `pythonw bypass_silent.pyw` und öffnet das Dashboard.
 
 #### Option 3: Manuelles Python
 
@@ -502,15 +502,15 @@ python -m pip install -r requirements.txt --user
 pythonw bypass_silent.pyw
 ```
 
-Dann Ã¶ffnen:
+Dann öffnen:
 
 ```text
 http://127.0.0.1:8888
 ```
 
-### Download PrÃ¼fen
+### Download Prüfen
 
-PrÃ¼fen Sie SHA-256 Hashes:
+Prüfen Sie SHA-256 Hashes:
 
 ```powershell
 Get-FileHash .\CleanNet.exe -Algorithm SHA256
@@ -519,11 +519,11 @@ Get-FileHash .\CleanNet-2.0-portable.zip -Algorithm SHA256
 
 Vergleichen Sie die Ausgabe mit `SHA256SUMS.txt` im Release.
 
-FÃ¼r maximale Transparenz verwenden Sie das portable ZIP oder klonen Sie den Quellcode und starten die Python-Version. Die Quellcode-Version verwendet dieselben Runtime-Module wie die EXE.
+Für maximale Transparenz verwenden Sie das portable ZIP oder klonen Sie den Quellcode und starten die Python-Version. Die Quellcode-Version verwendet dieselben Runtime-Module wie die EXE.
 
 ### Erster Start
 
-Ã–ffentliche Standardkonfiguration:
+Öffentliche Standardkonfiguration:
 
 - Website: Discord
 - Proxy: `127.0.0.1:8080`
@@ -532,7 +532,7 @@ FÃ¼r maximale Transparenz verwenden Sie das portable ZIP oder klonen Sie den Q
 - Background AI training: aus
 - DNS/SNI privacy mode: an
 
-Weitere Websites kÃ¶nnen Sie selbst im Dashboard hinzufÃ¼gen. Diese werden lokal in `config.json` gespeichert.
+Weitere Websites können Sie selbst im Dashboard hinzufügen. Diese werden lokal in `config.json` gespeichert.
 
 ### Dashboard
 
@@ -551,16 +551,16 @@ Bereiche:
 - Settings: Proxy-Bypass-Presets, Import/Export, Autostart, Diagnostics.
 - Logs: In-Memory-Log der aktuellen Sitzung.
 
-### Website HinzufÃ¼gen
+### Website Hinzufügen
 
-1. Dashboard Ã¶ffnen.
-2. Sites Ã¶ffnen.
+1. Dashboard öffnen.
+2. Sites öffnen.
 3. Domain eingeben.
-4. Resolve ausfÃ¼hren.
-5. Confirm and Add wÃ¤hlen.
+4. Resolve ausführen.
+5. Confirm and Add wählen.
 6. Website-Test starten.
 
-Die erste Verbindung kann wegen Strategie-Erkennung lÃ¤nger dauern. Danach wird die funktionierende Strategie lokal gespeichert.
+Die erste Verbindung kann wegen Strategie-Erkennung länger dauern. Danach wird die funktionierende Strategie lokal gespeichert.
 
 ### Gaming und Niedrige Latenz
 
@@ -569,11 +569,11 @@ Spiele, Launcher, Voice Apps, Anti-Cheat-Dienste und latenzkritische Apps sollte
 Nutzen Sie Performance -> Live PC Connections:
 
 1. Prozess oder Remote Endpoint finden.
-2. Add Exception fÃ¼r einen Endpoint oder Add All For Process fÃ¼r sichtbare Endpoints wÃ¤hlen.
+2. Add Exception für einen Endpoint oder Add All For Process für sichtbare Endpoints wählen.
 3. CleanNet schreibt den Eintrag in `proxy_bypass`.
 4. Windows Proxy Override wird aktualisiert.
 
-CleanNet kann keine echten process-level Windows Proxy Exceptions erstellen. Windows Proxy Bypass Regeln sind host/IP/domain-basiert. Das Dashboard hilft, diese Regeln aus Live-NetzwerkflÃ¼ssen zu erzeugen.
+CleanNet kann keine echten process-level Windows Proxy Exceptions erstellen. Windows Proxy Bypass Regeln sind host/IP/domain-basiert. Das Dashboard hilft, diese Regeln aus Live-Netzwerkflüssen zu erzeugen.
 
 ### Sicherheitsmodell
 
@@ -581,9 +581,9 @@ CleanNet kann keine echten process-level Windows Proxy Exceptions erstellen. Win
 |---|---|
 | Proxy Bind-Adresse | `127.0.0.1` |
 | Dashboard Bind-Adresse | `127.0.0.1` |
-| Adminrechte normal nÃ¶tig | Nein |
+| Adminrechte normal nötig | Nein |
 | Treiberinstallation | Nein |
-| HTTPS EntschlÃ¼sselung | Nein |
+| HTTPS Entschlüsselung | Nein |
 | Telemetrie | Nein |
 | Externe UI Assets | Nein |
 
@@ -593,20 +593,20 @@ CleanNet schreibt nur Benutzer-Proxy-Einstellungen:
 HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings
 ```
 
-Der vorherige Proxyzustand wird in `proxy_state.json` gesichert und beim normalen Beenden wiederhergestellt. Ein Watchdog korrigiert das Proxy-Eigentum wÃ¤hrend CleanNet lÃ¤uft.
+Der vorherige Proxyzustand wird in `proxy_state.json` gesichert und beim normalen Beenden wiederhergestellt. Ein Watchdog korrigiert das Proxy-Eigentum während CleanNet läuft.
 
 ### Datenschutz
 
-| Datei | Zweck | LÃ¶schbar |
+| Datei | Zweck | Löschbar |
 |---|---|---|
-| `config.json` | Websites, Ports, Privacy/Performance, Proxy Bypass | Ja, Einstellungen werden zurÃ¼ckgesetzt |
+| `config.json` | Websites, Ports, Privacy/Performance, Proxy Bypass | Ja, Einstellungen werden zurückgesetzt |
 | `strategy_cache.json` | Gelernte Strategiedaten | Ja |
 | `ai_strategy.json` | Adaptive Strategiedaten | Ja |
-| `stats.json` | Aggregierte ZÃ¤hler | Ja |
+| `stats.json` | Aggregierte Zähler | Ja |
 | `bypass.log` | Warning/Error Disk-Log | Ja |
-| `proxy_state.json` | Vorheriger Windows Proxy Backup | WÃ¤hrend der Laufzeit eher nein |
+| `proxy_state.json` | Vorheriger Windows Proxy Backup | Während der Laufzeit eher nein |
 
-Disk-Logs sind standardmÃ¤ÃŸig minimiert. Detaillierte Logs bleiben nur im Speicher fÃ¼r das Dashboard und verschwinden beim Beenden.
+Disk-Logs sind standardmäßig minimiert. Detaillierte Logs bleiben nur im Speicher für das Dashboard und verschwinden beim Beenden.
 
 ### Aus Quellcode Bauen
 
@@ -620,18 +620,18 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_release.ps1
 
 ### Fehlerbehebung
 
-| Problem | PrÃ¼fung |
+| Problem | Prüfung |
 |---|---|
-| Dashboard Ã¶ffnet nicht | `127.0.0.1:8888` und Portkonflikt prÃ¼fen. |
-| Website Ã¶ffnet nicht | Website-Test im Dashboard starten, Strategie-Erkennung abwarten, Logs prÃ¼fen. |
-| Discord routet nicht | In Overview/Diagnostics prÃ¼fen, ob Windows Proxy CleanNet gehÃ¶rt. |
-| Spiele haben hohe Latenz | Spiel-Endpoint oder Prozess-Endpoints zu Proxy Exceptions hinzufÃ¼gen. |
-| Internet nach Force-Close defekt | `CleanTraces.ps1` ausfÃ¼hren oder Windows Proxy manuell deaktivieren. |
-| EXE nicht vertrauenswÃ¼rdig | Portable ZIP oder Quellcode + `CleanNet_Launcher.bat` verwenden. |
+| Dashboard öffnet nicht | `127.0.0.1:8888` und Portkonflikt prüfen. |
+| Website öffnet nicht | Website-Test im Dashboard starten, Strategie-Erkennung abwarten, Logs prüfen. |
+| Discord routet nicht | In Overview/Diagnostics prüfen, ob Windows Proxy CleanNet gehört. |
+| Spiele haben hohe Latenz | Spiel-Endpoint oder Prozess-Endpoints zu Proxy Exceptions hinzufügen. |
+| Internet nach Force-Close defekt | `CleanTraces.ps1` ausführen oder Windows Proxy manuell deaktivieren. |
+| EXE nicht vertrauenswürdig | Portable ZIP oder Quellcode + `CleanNet_Launcher.bat` verwenden. |
 
 ### Rechtlicher Hinweis
 
-Verwenden Sie CleanNet nur dort, wo dies erlaubt ist. Das Projekt dient Bildung, InteroperabilitÃ¤t und persÃ¶nlicher Netzwerkdiagnose. Nutzer sind selbst fÃ¼r lokale Gesetze, Richtlinien und Nutzungsbedingungen verantwortlich.
+Verwenden Sie CleanNet nur dort, wo dies erlaubt ist. Das Projekt dient Bildung, Interoperabilität und persönlicher Netzwerkdiagnose. Nutzer sind selbst für lokale Gesetze, Richtlinien und Nutzungsbedingungen verantwortlich.
 
 ---
 

@@ -59,7 +59,7 @@ class _AiEngine:
 
 
 class ProxyEngineTests(unittest.IsolatedAsyncioTestCase):
-    def _context(self, *, open_connection=None, resolve_private=None):
+    def _context(self, *, open_connection=None, resolve_private=None, privacy=None):
         tracker = ConnectionTracker()
 
         async def default_open_connection(host, port):
@@ -81,7 +81,7 @@ class ProxyEngineTests(unittest.IsolatedAsyncioTestCase):
             ai_engine=_AiEngine(),
             strategy_funcs={"direct": _direct_strategy},
             direct_strategy=_direct_strategy,
-            get_privacy_settings=lambda: {"hide_dns": False, "hide_sni": False},
+            get_privacy_settings=lambda: privacy or {"hide_dns": False, "hide_sni": False},
             resolve_domain_privately=resolve_private or default_resolve_private,
             resolve_domain_doh=lambda host: [],
             is_ip_literal=lambda value: value.replace(".", "").isdigit(),
@@ -167,7 +167,41 @@ class ProxyEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(context.connection_tracker.count(), 0)
         self.assertTrue(writer.closed)
 
+    async def test_passthrough_uses_plain_tunnel_without_privacy_dns_or_sni_shield(self):
+        calls = []
+        private_resolutions = []
+        privacy_events = []
+
+        async def open_connection(host, port):
+            calls.append((host, port))
+            return _Reader(), _Writer()
+
+        async def resolve_private(host):
+            private_resolutions.append(host)
+            return ["203.0.113.10"]
+
+        context = self._context(
+            open_connection=open_connection,
+            resolve_private=resolve_private,
+            privacy={"hide_dns": True, "hide_sni": True},
+        )
+        context.record_privacy_event = lambda *args, **kwargs: privacy_events.append((args, kwargs))
+        engine = ProxyEngine(context)
+
+        async def fail_if_called(*_args, **_kwargs):
+            raise AssertionError("SNI shield should not run for passthrough domains")
+
+        engine.forward_with_sni_shield = fail_if_called
+        writer = _Writer()
+
+        await engine.handle_proxy_client(_Reader(b"CONNECT api.openai.com:443 HTTP/1.1\r\n\r\n"), writer)
+
+        self.assertEqual(calls, [("api.openai.com", 443)])
+        self.assertEqual(private_resolutions, [])
+        self.assertIn(b"HTTP/1.1 200 Connection Established\r\n\r\n", writer.data)
+        self.assertEqual(privacy_events[0][1]["sni_status"], "direct")
+        self.assertEqual(privacy_events[0][1]["sni_detail"], "passthrough tunnel")
+
 
 if __name__ == "__main__":
     unittest.main()
-

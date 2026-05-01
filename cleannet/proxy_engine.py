@@ -317,10 +317,14 @@ class ProxyEngine:
             self.ctx.stats["connections"] += 1
 
             if not should_bypass:
-                privacy = self.ctx.get_privacy_settings()
-                self.ctx.logger.info(f"[PASSTHROUGH{'-SHIELD' if privacy['hide_sni'] else ''}] {target_host}:{target_port}")
+                self.ctx.logger.info(f"[PASSTHROUGH] {target_host}:{target_port}")
                 privacy_dns: dict[str, Any] = {}
-                server_reader, server_writer = await self.try_connect(connect_host, target_port, privacy_context=privacy_dns)
+                server_reader, server_writer = await self.try_connect(
+                    connect_host,
+                    target_port,
+                    privacy_context=privacy_dns,
+                    use_privacy_dns=False,
+                )
                 if not server_writer:
                     self.ctx.record_privacy_event(
                         target_host,
@@ -332,38 +336,14 @@ class ProxyEngine:
                     return
                 writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
                 await writer.drain()
-                if privacy["hide_sni"]:
-                    try:
-                        first_chunk = await asyncio.wait_for(reader.read(8192), timeout=10)
-                    except asyncio.TimeoutError:
-                        return
-                    if not first_chunk:
-                        return
-                    shield_result = await self.forward_with_sni_shield(
-                        reader,
-                        writer,
-                        server_reader,
-                        server_writer,
-                        first_chunk,
-                        target_host,
-                        target_port,
-                    )
-                    self.ctx.record_privacy_event(
-                        target_host,
-                        dns_status=privacy_dns.get("dns_status", "unknown"),
-                        dns_detail=privacy_dns.get("dns_detail", ""),
-                        sni_status=shield_result.get("status", "unknown"),
-                        sni_detail=shield_result.get("detail", ""),
-                    )
-                else:
-                    self.ctx.record_privacy_event(
-                        target_host,
-                        dns_status=privacy_dns.get("dns_status", "direct"),
-                        dns_detail=privacy_dns.get("dns_detail", ""),
-                        sni_status="direct",
-                        sni_detail="shield off",
-                    )
-                    await self.tunnel_plain(reader, writer, server_reader, server_writer)
+                self.ctx.record_privacy_event(
+                    target_host,
+                    dns_status=privacy_dns.get("dns_status", "direct"),
+                    dns_detail=privacy_dns.get("dns_detail", ""),
+                    sni_status="direct",
+                    sni_detail="passthrough tunnel",
+                )
+                await self.tunnel_plain(reader, writer, server_reader, server_writer)
                 return
 
             is_main = self.ctx.is_main_domain(target_host, site_name)
