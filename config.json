@@ -1,47 +1,59 @@
 {
-    "sites": {
-        "discord": {
-            "enabled": true,
-            "domains": [
-                "discord.com",
-                "discordapp.com",
-                "discord.gg",
-                "discord.media",
-                "discordapp.net",
-                "discord.dev",
-                "discord.new",
-                "discord.gift",
-                "discordstatus.com",
-                "dis.gd",
-                "cdn.discordapp.com",
-                "media.discordapp.net",
-                "images-ext-1.discordapp.net",
-                "images-ext-2.discordapp.net",
-                "gateway.discord.gg",
-                "status.discord.com",
-                "updates.discord.com",
-                "dl.discordapp.net",
-                "latency.discord.media",
-                "remote-auth-gateway.discord.gg"
-            ],
-            "dns_resolve": [
-                "discord.com",
-                "gateway.discord.gg",
-                "cdn.discordapp.com",
-                "media.discordapp.net",
-                "updates.discord.com",
-                "status.discord.com"
-            ],
-            "ips": [
-                "162.159.128.233",
-                "162.159.129.233",
-                "162.159.130.233",
-                "162.159.136.232",
-                "162.159.137.232"
-            ]
-        }
-    },
-    "proxy_port": 8080,
-    "dashboard_port": 8888,
-    "proxy_bypass": []
+  "sites": {
+    "discord": {
+      "enabled": true,
+      "domains": [
+        "discord.com",
+        "discordapp.com",
+        "discord.gg",
+        "discord.media",
+        "discordapp.net",
+        "discord.dev",
+        "discord.new",
+        "discord.gift",
+        "discordstatus.com",
+        "dis.gd",
+        "cdn.discordapp.com",
+        "media.discordapp.net",
+        "images-ext-1.discordapp.net",
+        "images-ext-2.discordapp.net",
+        "gateway.discord.gg",
+        "status.discord.com",
+        "updates.discord.com",
+        "dl.discordapp.net",
+        "latency.discord.media",
+        "remote-auth-gateway.discord.gg"
+      ],
+      "dns_resolve": [
+        "discord.com",
+        "gateway.discord.gg",
+        "cdn.discordapp.com",
+        "media.discordapp.net",
+        "updates.discord.com",
+        "status.discord.com"
+      ],
+      "ips": [
+        "162.159.128.233",
+        "162.159.129.233",
+        "162.159.130.233",
+        "162.159.136.232",
+        "162.159.137.232"
+      ],
+      "strategy": "tls_multi_record"
+    }
+  },
+  "proxy_port": 8080,
+  "dashboard_port": 8888,
+  "proxy_bypass": [],
+  "privacy": {
+    "hide_dns": true,
+    "hide_sni": true
+  },
+  "performance": {
+    "low_latency_mode": true,
+    "background_training": false,
+    "health_check_interval": 120,
+    "ip_update_interval": 1800,
+    "ping_target_host": "1.1.1.1"
+  }
 }

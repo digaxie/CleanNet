@@ -1,9 +1,35 @@
+# Python
 __pycache__/
 *.py[cod]
-.claude/
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
-ai_strategy.json
-stats.json
-strategy_cache.json
+# Local runtime data
 bypass.log
 bypass.log.*
+stats.json
+strategy_cache.json
+ai_strategy.json
+proxy_state.json
+privacy_sites*.txt
+
+# Build output
+build/
+CleanNet.spec
+*.manifest
+
+# Release artifacts are generated locally and uploaded to GitHub Releases.
+# Keep them out of normal source commits unless you intentionally vendor binaries.
+dist/
+
+# Local editor/system files
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Local review/archive folders
+_delete_review/

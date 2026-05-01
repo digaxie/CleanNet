@@ -18,9 +18,9 @@ if defined LOCALE (
 REM ==================== STRINGS ====================
 if "!LANG!"=="tr" (
     set "STR_HEADER=      CleanNet - DPI Bypass Motoru"
-    set "STR_KILL_ASK=[?] Calisan pythonw.exe islemleri kapatilsin mi? (E/H): "
+    set "STR_KILL_ASK=[?] Calisan CleanNet islemi kapatilsin mi? (E/H): "
     set "STR_KILL_YES=E"
-    set "STR_KILL_DONE=[OK] pythonw islemleri kapatildi"
+    set "STR_KILL_DONE=[OK] CleanNet islemi kapatildi"
     set "STR_KILL_SKIP=[*] Mevcut islemler korunuyor"
     set "STR_PROXY_CLEAR=[OK] Eski proxy ayarlari temizlendi"
     set "STR_DEP_CHECK=[*] Bagimliliklar kontrol ediliyor..."
@@ -42,9 +42,9 @@ if "!LANG!"=="tr" (
     set "STR_AUTO_SKIP=[*] Baslangica eklenmedi"
 ) else if "!LANG!"=="de" (
     set "STR_HEADER=      CleanNet - DPI-Bypass-Engine"
-    set "STR_KILL_ASK=[?] Laufende pythonw.exe-Prozesse beenden? (J/N): "
+    set "STR_KILL_ASK=[?] Laufenden CleanNet-Prozess beenden? (J/N): "
     set "STR_KILL_YES=J"
-    set "STR_KILL_DONE=[OK] pythonw-Prozesse beendet"
+    set "STR_KILL_DONE=[OK] CleanNet-Prozess beendet"
     set "STR_KILL_SKIP=[*] Bestehende Prozesse beibehalten"
     set "STR_PROXY_CLEAR=[OK] Alte Proxy-Einstellungen entfernt"
     set "STR_DEP_CHECK=[*] Abhangigkeiten werden gepruft..."
@@ -66,9 +66,9 @@ if "!LANG!"=="tr" (
     set "STR_AUTO_SKIP=[*] Nicht zum Autostart hinzugefuegt"
 ) else (
     set "STR_HEADER=      CleanNet - DPI Bypass Engine"
-    set "STR_KILL_ASK=[?] Kill running pythonw.exe processes? (Y/N): "
+    set "STR_KILL_ASK=[?] Stop running CleanNet process? (Y/N): "
     set "STR_KILL_YES=Y"
-    set "STR_KILL_DONE=[OK] pythonw processes killed"
+    set "STR_KILL_DONE=[OK] CleanNet process stopped"
     set "STR_KILL_SKIP=[*] Keeping existing processes"
     set "STR_PROXY_CLEAR=[OK] Old proxy settings cleared"
     set "STR_DEP_CHECK=[*] Checking dependencies..."
@@ -100,13 +100,13 @@ REM Clear old proxy settings
 reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings" /v ProxyEnable /t REG_DWORD /d 0 /f >nul 2>&1
 echo !STR_PROXY_CLEAR!
 
-REM Check if pythonw.exe is running before asking
-tasklist /fi "imagename eq pythonw.exe" 2>nul | find /i "pythonw.exe" >nul 2>&1
+REM Check if this CleanNet script is running before asking
+powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"name = 'pythonw.exe'\" | Where-Object { $_.CommandLine -like '*bypass_silent.pyw*' } | Select-Object -First 1 | ForEach-Object { exit 0 }; exit 1" >nul 2>&1
 if !errorlevel! equ 0 (
     echo.
     set /p "KILL_CHOICE=!STR_KILL_ASK!"
     if /i "!KILL_CHOICE!"=="!STR_KILL_YES!" (
-        taskkill /f /im pythonw.exe >nul 2>&1
+        powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-CimInstance Win32_Process -Filter \"name = 'pythonw.exe'\" | Where-Object { $_.CommandLine -like '*bypass_silent.pyw*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }" >nul 2>&1
         timeout /t 1 /nobreak >nul
         echo !STR_KILL_DONE!
     ) else (
