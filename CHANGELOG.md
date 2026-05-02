@@ -5,6 +5,7 @@
 - Fixed Turkish/German documentation encoding so GitHub renders non-ASCII text correctly.
 - Added OpenAI/ChatGPT/VS Code developer endpoints to the built-in proxy bypass list.
 - Changed non-configured passthrough domains to use a plain tunnel instead of DNS/SNI privacy shielding, avoiding breakage in apps such as VS Code extensions.
+- Fixed Performance dashboard toggles so Low Latency Mode and Background AI Training preserve user changes while live stats refresh.
 - Prepared a clean public repository package in a separate publishing folder.
 - Replaced the GitHub README with a full Turkish, English, and German end-user guide.
 - Rewrote security and privacy documentation with explicit local-only behavior, EXE trust notes, registry scope, and verification steps.

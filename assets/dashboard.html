@@ -699,6 +699,10 @@ let _presetSig='';
 let _lastPresetOptions=[];
 let _strategyCatalog=['direct','host_split','fragment_light','tls_record_frag'];
 let _performanceSettings=null;
+let _performanceSaving=false;
+let _performanceDirty=false;
+let _performanceSaveSeq=0;
+let _performanceControlsBound=false;
 let _networkFlows=[];
 es.onmessage=e=>{const d=JSON.parse(e.data);U(d)};
 function setMetric(id,value){
@@ -801,7 +805,26 @@ function U(d){try{
     l.scrollTop=l.scrollHeight;
     while(l.children.length>150)l.removeChild(l.firstChild)}
 }catch(e){console.error('U() error:',e)}}
-function updatePerformanceUI(perf,diag,flowSummary){
+function markPerformanceDirty(){
+  _performanceDirty=true;
+}
+function bindPerformanceControls(){
+  if(_performanceControlsBound)return;
+  _performanceControlsBound=true;
+  ['perfLow','perfTraining','perfIpInterval','perfHealthInterval'].forEach(id=>{
+    const el=document.getElementById(id);
+    if(el)el.addEventListener('change',()=>{markPerformanceDirty();savePerformanceSettings()});
+  });
+  const target=document.getElementById('perfPingTarget');
+  if(target){
+    target.addEventListener('input',markPerformanceDirty);
+    target.addEventListener('change',()=>{markPerformanceDirty();savePerformanceSettings()});
+    target.addEventListener('keydown',e=>{
+      if(e.key==='Enter'){e.preventDefault();markPerformanceDirty();savePerformanceSettings()}
+    });
+  }
+}
+function updatePerformanceUI(perf,diag,flowSummary,opts){
   _performanceSettings=perf;
   const effective=perf.effective||perf;
   const low=!!effective.low_latency_mode,training=!!effective.background_training;
@@ -815,11 +838,16 @@ function updatePerformanceUI(perf,diag,flowSummary){
       +'<span class="status-pill '+(!training?'good':'warn')+'">'+t('background_training')+' '+(training?t('on'):t('off'))+'</span>'
       +'<span class="status-pill">'+t('ping_target')+': '+esc(effective.ping_target_host||'--')+'</span>';
   }
-  const lowEl=document.getElementById('perfLow');if(lowEl)lowEl.checked=low;
-  const trEl=document.getElementById('perfTraining');if(trEl)trEl.checked=training;
-  const ipEl=document.getElementById('perfIpInterval');if(ipEl)ipEl.value=String(effective.ip_update_interval||1800);
-  const hcEl=document.getElementById('perfHealthInterval');if(hcEl)hcEl.value=String(effective.health_check_interval||120);
-  const ptEl=document.getElementById('perfPingTarget');if(ptEl)ptEl.value=effective.ping_target_host||'1.1.1.1';
+  const forceControls=!!(opts&&opts.forceControls);
+  if(forceControls||(!_performanceSaving&&!_performanceDirty)){
+    const formLow=typeof perf.low_latency_mode==='boolean'?perf.low_latency_mode:low;
+    const formTraining=typeof perf.background_training==='boolean'?perf.background_training:training;
+    const lowEl=document.getElementById('perfLow');if(lowEl)lowEl.checked=formLow;
+    const trEl=document.getElementById('perfTraining');if(trEl)trEl.checked=formTraining;
+    const ipEl=document.getElementById('perfIpInterval');if(ipEl)ipEl.value=String(perf.ip_update_interval||effective.ip_update_interval||1800);
+    const hcEl=document.getElementById('perfHealthInterval');if(hcEl)hcEl.value=String(perf.health_check_interval||effective.health_check_interval||120);
+    const ptEl=document.getElementById('perfPingTarget');if(ptEl)ptEl.value=perf.ping_target_host||effective.ping_target_host||'1.1.1.1';
+  }
   renderNetworkDiagnostics(diag,flowSummary);
 }
 function renderNetworkDiagnostics(diag,flowSummary){
@@ -848,10 +876,11 @@ function renderNetworkDiagnostics(diag,flowSummary){
 async function loadPerformanceSettings(){
   try{
     const r=await fetch('/api/performance-settings');const d=await r.json();
-    updatePerformanceUI(d,null,null);
+    updatePerformanceUI(d,null,null,{forceControls:true});
   }catch(e){console.error('performance settings error:',e)}
 }
 async function savePerformanceSettings(){
+  const seq=++_performanceSaveSeq;
   const body={
     low_latency_mode:!!document.getElementById('perfLow').checked,
     background_training:!!document.getElementById('perfTraining').checked,
@@ -859,8 +888,29 @@ async function savePerformanceSettings(){
     health_check_interval:parseInt(document.getElementById('perfHealthInterval').value,10),
     ping_target_host:document.getElementById('perfPingTarget').value.trim()||'1.1.1.1'
   };
-  const r=await fetch('/api/performance-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-  if(r.ok){const d=await r.json();updatePerformanceUI(d.performance,null,null)}
+  _performanceSaving=true;
+  _performanceDirty=true;
+  try{
+    const r=await fetch('/api/performance-settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(r.ok){
+      const d=await r.json();
+      if(seq===_performanceSaveSeq){
+        _performanceDirty=false;
+        updatePerformanceUI(d.performance,null,null,{forceControls:true});
+      }
+    }else{
+      if(seq===_performanceSaveSeq){
+        _performanceDirty=false;
+        loadPerformanceSettings();
+      }
+    }
+  }catch(e){
+    if(seq===_performanceSaveSeq)_performanceDirty=false;
+    console.error('performance save error:',e);
+    if(seq===_performanceSaveSeq)loadPerformanceSettings();
+  }finally{
+    if(seq===_performanceSaveSeq)_performanceSaving=false;
+  }
 }
 async function loadNetworkFlows(force){
   try{
@@ -1497,6 +1547,7 @@ function initCardMotion(){
   });
 }
 initCardMotion();
+bindPerformanceControls();
 applyLang();
 loadStrategyCatalog();
 loadPerformanceSettings();

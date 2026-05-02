@@ -212,12 +212,13 @@ class DashboardServerTests(unittest.IsolatedAsyncioTestCase):
         await server.handle_http(
             _Reader(
                 b"POST /api/performance-settings HTTP/1.1\r\nHost: x\r\n\r\n",
-                b'{"background_training":true,"health_check_interval":300,"ip_update_interval":900,"ping_target_host":"8.8.8.8"}',
+                b'{"low_latency_mode":false,"background_training":true,"health_check_interval":300,"ip_update_interval":900,"ping_target_host":"8.8.8.8"}',
             ),
             writer,
         )
 
         self.assertIn(b"200 OK", bytes(writer.data))
+        self.assertFalse(server.ctx.get_config()["performance"]["low_latency_mode"])
         self.assertTrue(server.ctx.get_config()["performance"]["background_training"])
         self.assertEqual(server.ctx.get_config()["performance"]["health_check_interval"], 300)
         self.assertEqual(server.ctx.get_config()["performance"]["ip_update_interval"], 900)
