@@ -1,4 +1,18 @@
-﻿# Changelog
+# Changelog
+
+## 2.1 Linux Compatibility Release - 2026-05-28
+
+- Added native Linux compatibility and DPI-bypass support (`python -m cleannet`).
+- Created a dedicated `linux/` subdirectory containing a completely Windows-free, native Linux codebase package.
+- Implemented Linux proxy backend selection in `os_integration.py` supporting KDE (`kwriteconfig/kreadconfig`), GNOME (`gsettings`), and system `env-file` fallback (`~/.config/cleannet/proxy.env`).
+- Added robust system proxy backup and restore using `linux_proxy_state.json` to prevent orphaned settings.
+- Rewrote `network_monitor.py` for Linux using a robust `ss`-based active connection parser with standard process lookup fallbacks.
+- Updated the local system tray (`cleannet/tray.py`) with native PyQt6 QSystemTrayIcon and explicit 22x22 pixel smooth scaling to prevent rendering issues on GNOME/Cinnamon/MATE system panels.
+- Handled tray menu popup bugs by manually capturing `ActivationReason.Context` (right clicks) on all Linux environments.
+- Added optional `pystray` fallback tray.
+- Added full Linux quality gate shell scripts: `run_tests.sh`, `scripts/build_linux_release.sh`, and `scripts/verify_linux_release.sh`.
+- Excluded Windows-specific scripts, batch files, and installers from the Linux directory.
+- Updated main `README.md` to document Linux-specific startup, configuration, requirements, and instructions.
 
 ## 2.0 Public GitHub Package - 2026-05-01
 

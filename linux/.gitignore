@@ -1,0 +1,72 @@
+# Byte-compiled / optimized / DLL support
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions
+*.so
+
+# Distribution / packaging
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# PyInstaller
+*.manifest
+*.spec
+
+# Installer logs
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Unit test / coverage reports
+htmlcov/
+.tox/
+.nosetests
+.pytest_cache/
+.cache/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.stats/
+.coverage
+.coverage.*
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+active_env/
+
+# CleanNet specific runtime generated files
+stats.json
+strategy_cache.json
+ai_strategy.json
+proxy_state.json
+bypass.log
+linux_proxy_state.json
+
+# IDEs/Editors
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store

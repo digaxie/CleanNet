@@ -1,10 +1,21 @@
 # CleanNet
 
-CleanNet is a local, Windows-focused DPI bypass tool for people who want a transparent alternative to opaque VPN-like utilities. It runs on your own computer, listens only on `127.0.0.1`, and routes selected HTTPS connections through a local proxy that can fragment TLS ClientHello traffic.
+CleanNet is a local DPI bypass tool for people who want a transparent alternative to opaque VPN-like utilities. It runs on your own computer, listens only on `127.0.0.1`, and routes selected HTTPS connections through a local proxy that can fragment TLS ClientHello traffic.
 
-Languages: [English](#english) | [Türkçe](#türkçe) | [Deutsch](#deutsch)
+> [!IMPORTANT]
+> **Linux & Windows Dual Platform Support (v2.1)**
+> CleanNet now natively supports **Linux**! Windows files remain at the root of the repository, and the native, fully-compatible Linux version is located in the [linux/](linux) directory with its own detailed setup guide.
+>
+> **Linux ve Windows Çift Platform Desteği (v2.1)**
+> CleanNet artık **Linux** platformunu resmi olarak destekliyor! Windows dosyaları kök dizinde kalırken, Linux için tamamen uyumlu sürüm [linux/](linux) dizini altında yer almaktadır ve kendine has detaylı bir kurulum rehberi içerir.
+>
+> **Linux & Windows Dual-Plattform-Unterstützung (v2.1)**
+> CleanNet unterstützt jetzt nativ **Linux**! Die Windows-Dateien verbleiben im Stammverzeichnis, während sich die Linux-Version im Verzeichnis [linux/](linux) befindet, inklusive einer eigenen detaillierten Anleitung.
 
-Current version: `v2.0`
+Languages: [English](#english) | [Türkçe](#türkçe) | [Deutsch](#deutsch) | [Linux Guide](linux)
+
+Current version: `v2.1`
+
 
 Public default site list: Discord only. No personal/custom site list is included in this public package.
 

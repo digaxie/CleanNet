@@ -1,4 +1,4 @@
-﻿# Release Guide
+# Release Guide
 
 This repository is source-first. End-user binaries should normally be uploaded to GitHub Releases, not committed to the main branch.
 
@@ -68,14 +68,38 @@ Upload these files to GitHub Releases:
 - `dist\CleanNet-2.0-portable.zip`
 - `dist\SHA256SUMS.txt`
 
+
+## Linux Release Requirements
+
+- All tests must pass using `./run_tests.sh` inside the `linux/` directory.
+- Compile and run quality checks using `./scripts/verify_linux_release.sh` inside the `linux/` directory.
+- `linux/cleannet/ai_strategy.json` and other dynamic files must be excluded from tracking.
+
+## Build Linux Tarball
+
+Run inside the `linux/` directory:
+
+```bash
+./scripts/build_linux_release.sh
+```
+
+Output:
+
+- `linux/dist/cleannet-linux-2.1/`
+- `linux/dist/cleannet-linux-2.1.tar.gz`
+- `linux/dist/SHA256SUMS.txt`
+
+Upload these files to GitHub Releases along with the Windows binaries.
+
 ## Suggested GitHub Release Text
 
 ```text
-CleanNet v2.0
+CleanNet v2.1 (Linux & Windows)
 
 Install options:
-1. CleanNet.exe - fastest path for normal users.
-2. CleanNet-2.0-portable.zip - readable source/BAT path for users who do not trust EXE files.
+1. CleanNet.exe - fastest path for normal Windows users.
+2. CleanNet-2.0-portable.zip - readable source/BAT path for Windows users who prefer auditable files.
+3. cleannet-linux-2.1.tar.gz - prepackaged release for Linux users. Open terminal, extract it, and run: ./cleannet-launcher.sh
 
 Default public configuration includes Discord only.
 
@@ -83,3 +107,4 @@ Verify downloads with SHA256SUMS.txt.
 Dashboard: http://127.0.0.1:8888
 Proxy: 127.0.0.1:8080
 ```
+
