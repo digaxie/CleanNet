@@ -65,6 +65,8 @@ class DashboardRuntimeContext:
     set_autostart: Callable[[bool], Any]
     get_privacy_settings: Callable[[], dict[str, bool]]
     get_performance_settings: Callable[[], dict[str, Any]]
+    get_onboarding_status: Callable[[], dict[str, Any]]
+    complete_onboarding: Callable[[], bool]
     get_network_flows: Callable[[], dict[str, Any]]
     test_site_connection: Callable[[str], Awaitable[Any]]
     get_running: Callable[[], bool]
@@ -318,6 +320,7 @@ class DashboardServer:
             "performance": performance,
             "network_diagnostics": network_diagnostics,
             "network_flows_summary": network_summary,
+            "onboarding": self.ctx.get_onboarding_status(),
             "active_connections": active_connections,
             "strategy_recommendations": strategy_recommendations,
             "strategy_history": list(self.ctx.strategy_history)[-50:],
@@ -509,6 +512,24 @@ class DashboardServer:
 
             elif path == "/api/performance-settings" and method == "GET":
                 await self._send_json(writer, self._performance_payload())
+
+            elif path == "/api/onboarding" and method == "GET":
+                await self._send_json(writer, self.ctx.get_onboarding_status())
+
+            elif path == "/api/onboarding/complete" and method == "POST":
+                try:
+                    completed = self.ctx.complete_onboarding()
+                    status = self.ctx.get_onboarding_status()
+                    status["ok"] = bool(completed)
+                    await self._send_json(writer, status)
+                except Exception as e:
+                    self.ctx.logger.error(f"Onboarding complete error: {e}")
+                    await self._send(
+                        writer,
+                        "500 Internal Server Error",
+                        b'{"error":"onboarding failed"}',
+                        content_type="application/json",
+                    )
 
             elif path == "/api/performance-settings" and method == "POST":
                 try:

@@ -66,7 +66,10 @@ def build_app_paths(app_file: str) -> AppPaths:
         ):
             runtime_dir = parent_dir
         else:
-            runtime_dir = exe_dir
+            runtime_dir = os.path.join(
+                os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+                "CleanNet",
+            )
     else:
         runtime_dir = os.path.dirname(app_file)
     data_dir_override = os.environ.get("CLEANNET_DATA_DIR")

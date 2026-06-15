@@ -149,8 +149,55 @@ canvas{width:100%;height:100%}
 .preset-card .preset-title{display:flex;justify-content:space-between;gap:8px;color:#fff;font-weight:700;font-size:12px;margin-bottom:6px}
 .preset-card .preset-desc{color:var(--text2);font-size:10px;line-height:1.4;min-height:28px}
 .preset-card .preset-meta{display:flex;gap:7px;flex-wrap:wrap;margin-top:8px;font-family:var(--mono);font-size:9px;color:var(--text3)}
+.setup-overlay{position:fixed;inset:0;z-index:2000;background:rgba(6,8,14,.92);backdrop-filter:blur(18px);display:none;place-items:center;padding:22px;overflow:auto}
+.setup-overlay.active{display:grid}
+.setup-panel{width:min(880px,100%);background:linear-gradient(135deg,var(--surface),rgba(23,27,45,.96));border:1px solid var(--border2);border-radius:18px;box-shadow:0 24px 70px #0008;overflow:hidden}
+.setup-hero{padding:28px 30px 20px;border-bottom:1px solid var(--border);background:linear-gradient(135deg,rgba(129,140,248,.16),rgba(34,211,238,.08))}
+.setup-brand{display:flex;align-items:center;gap:12px;margin-bottom:16px}
+.setup-logo{width:42px;height:42px;border-radius:12px;background:linear-gradient(135deg,var(--accent),var(--cyan));display:grid;place-items:center;color:#fff;font-weight:900;box-shadow:0 0 24px var(--accent-glow)}
+.setup-title{font-size:25px;font-weight:800;color:#fff;line-height:1.15}
+.setup-copy{font-size:13px;color:var(--text2);line-height:1.65;max-width:760px}
+.setup-body{padding:22px 30px 28px}
+.setup-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-bottom:16px}
+.setup-step{background:var(--surface2);border:1px solid var(--border);border-radius:12px;padding:14px;min-height:118px}
+.setup-step strong{display:block;color:#fff;font-size:13px;margin-bottom:8px}
+.setup-step span{display:block;color:var(--text2);font-size:11px;line-height:1.55}
+.setup-path{background:var(--bg);border:1px solid var(--border);border-radius:10px;padding:12px;font-family:var(--mono);font-size:11px;color:var(--cyan);word-break:break-all;margin:10px 0 16px}
+.setup-actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;justify-content:space-between}
+.setup-muted{font-size:10px;color:var(--text3);line-height:1.45;max-width:430px}
+.setup-btn{padding:11px 20px;font-size:13px;border-radius:10px}
 @media (max-width:700px){.data-table{min-width:620px}.live-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.traffic-strip{grid-template-columns:repeat(6,1fr)}}
 </style></head><body>
+<div id="setupOverlay" class="setup-overlay">
+  <div class="setup-panel">
+    <div class="setup-hero">
+      <div class="setup-brand">
+        <div class="setup-logo">CN</div>
+        <div>
+          <div class="setup-title" data-i="setup_title">Welcome to CleanNet</div>
+          <div class="setup-copy" data-i="setup_subtitle">Before CleanNet changes Windows proxy settings, review what will happen and start it yourself.</div>
+        </div>
+      </div>
+      <p class="setup-copy" data-i="setup_intro">CleanNet runs locally on your computer. It listens on 127.0.0.1, stores settings in one visible folder, and only enables the Windows user proxy after you confirm this setup.</p>
+    </div>
+    <div class="setup-body">
+      <div class="setup-grid">
+        <div class="setup-step"><strong data-i="setup_local_title">Local only</strong><span data-i="setup_local_desc">Dashboard and proxy bind to 127.0.0.1. No cloud account or remote control is used.</span></div>
+        <div class="setup-step"><strong data-i="setup_proxy_title">Proxy with consent</strong><span data-i="setup_proxy_desc">Windows proxy stays off until you press Start CleanNet. You can reset it from tray or dashboard.</span></div>
+        <div class="setup-step"><strong data-i="setup_data_title">Visible data folder</strong><span data-i="setup_data_desc">Config, logs, stats and AI cache are kept in this folder so you can inspect or delete them.</span></div>
+      </div>
+      <div class="sec-title" data-i="setup_data_folder">Data folder</div>
+      <div id="setupPath" class="setup-path">--</div>
+      <div class="setup-actions">
+        <div class="setup-muted" data-i="setup_note">Starting CleanNet writes only user-level Windows proxy settings. It does not install drivers, services, certificates or system-wide hooks.</div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn btn-ghost setup-btn" onclick="copySetupPath()" data-i="setup_copy_path">Copy Folder Path</button>
+          <button id="setupStartBtn" class="btn setup-btn" onclick="completeOnboarding()" data-i="setup_start">Start CleanNet</button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 <div class="hdr">
   <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="url(#hg)" stroke-width="2"/><path d="M12 8v4l3.5 2" stroke="url(#hg)" stroke-width="2" stroke-linecap="round"/><defs><linearGradient id="hg" x1="3" y1="2" x2="21" y2="22"><stop stop-color="#818cf8"/><stop offset="1" stop-color="#a78bfa"/></linearGradient></defs></svg>
   <h1>CleanNet</h1><span class="tag">v__CLEANNET_VERSION__</span>
@@ -582,7 +629,14 @@ Object.assign(I.en,{
   preset_cdn_label:'CDN',preset_cdn_desc:'Common generic CDN and asset hosts that usually should stay untouched.',
   preset_streaming_label:'Streaming',preset_streaming_desc:'Video and music platforms with high-volume media delivery domains.',
   preset_social_label:'Social',preset_social_desc:'Social networks, messaging, image/video CDNs, and short-form media hosts.',
-  preset_work_label:'Work',preset_work_desc:'Collaboration, meetings, design, storage, and productivity services.'
+  preset_work_label:'Work',preset_work_desc:'Collaboration, meetings, design, storage, and productivity services.',
+  setup_title:'Welcome to CleanNet',setup_subtitle:'Before CleanNet changes Windows proxy settings, review what will happen and start it yourself.',
+  setup_intro:'CleanNet runs locally on your computer. It listens on 127.0.0.1, stores settings in one visible folder, and only enables the Windows user proxy after you confirm this setup.',
+  setup_local_title:'Local only',setup_local_desc:'Dashboard and proxy bind to 127.0.0.1. No cloud account or remote control is used.',
+  setup_proxy_title:'Proxy with consent',setup_proxy_desc:'Windows proxy stays off until you press Start CleanNet. You can reset it from tray or dashboard.',
+  setup_data_title:'Visible data folder',setup_data_desc:'Config, logs, stats and AI cache are kept in this folder so you can inspect or delete them.',
+  setup_data_folder:'Data folder',setup_note:'Starting CleanNet writes only user-level Windows proxy settings. It does not install drivers, services, certificates or system-wide hooks.',
+  setup_copy_path:'Copy Folder Path',setup_start:'Start CleanNet',setup_starting:'Starting...',setup_started:'CleanNet started'
 });
 Object.assign(I.tr,{
   app_title:'CleanNet Paneli',
@@ -612,7 +666,14 @@ Object.assign(I.tr,{
   preset_cdn_label:'CDN',preset_cdn_desc:'Genelde dokunulmamasi gereken yaygin CDN ve asset hostlari.',
   preset_streaming_label:'Yayin',preset_streaming_desc:'Yuksek hacimli medya dagitimi yapan video ve muzik platformlari.',
   preset_social_label:'Sosyal',preset_social_desc:'Sosyal aglar, mesajlasma servisleri, gorsel/video CDNleri ve kisa video hostlari.',
-  preset_work_label:'Is',preset_work_desc:'Ekip calismasi, toplantilar, tasarim, depolama ve uretkenlik servisleri.'
+  preset_work_label:'Is',preset_work_desc:'Ekip calismasi, toplantilar, tasarim, depolama ve uretkenlik servisleri.',
+  setup_title:'CleanNet kurulumuna hos geldin',setup_subtitle:'CleanNet Windows proxy ayarini degistirmeden once ne yapacagini gosterir ve kontrolu sana birakir.',
+  setup_intro:'CleanNet bilgisayarinda yerel calisir. Sadece 127.0.0.1 uzerinden dinler, ayarlari gorunur tek bir klasorde tutar ve sen onay vermeden Windows kullanici proxy ayarini acmaz.',
+  setup_local_title:'Sadece yerel',setup_local_desc:'Dashboard ve proxy 127.0.0.1 adresine baglanir. Bulut hesabi veya uzaktan kontrol yoktur.',
+  setup_proxy_title:'Onayli proxy',setup_proxy_desc:'Start CleanNet demeden Windows proxy kapali kalir. Tray veya dashboarddan guvenli sekilde sifirlayabilirsin.',
+  setup_data_title:'Gorunur veri klasoru',setup_data_desc:'Config, log, istatistik ve AI cache bu klasorde tutulur; inceleyebilir veya silebilirsin.',
+  setup_data_folder:'Veri klasoru',setup_note:'CleanNet baslatildiginda sadece kullanici seviyesinde Windows proxy ayari yazar. Driver, servis, sertifika veya sistem geneli hook kurmaz.',
+  setup_copy_path:'Klasor Yolunu Kopyala',setup_start:'CleanNet Baslat',setup_starting:'Baslatiliyor...',setup_started:'CleanNet baslatildi'
 });
 Object.assign(I.de,{
   app_title:'CleanNet Dashboard',
@@ -642,7 +703,14 @@ Object.assign(I.de,{
   preset_cdn_label:'CDN',preset_cdn_desc:'Gaengige CDN- und Asset-Hosts, die normalerweise unangetastet bleiben sollten.',
   preset_streaming_label:'Streaming',preset_streaming_desc:'Video- und Musikplattformen mit hohem Mediendatenverkehr.',
   preset_social_label:'Sozial',preset_social_desc:'Soziale Netzwerke, Messaging, Bild-/Video-CDNs und Kurzvideo-Hosts.',
-  preset_work_label:'Arbeit',preset_work_desc:'Zusammenarbeit, Meetings, Design, Speicher und Produktivitaetsdienste.'
+  preset_work_label:'Arbeit',preset_work_desc:'Zusammenarbeit, Meetings, Design, Speicher und Produktivitaetsdienste.',
+  setup_title:'Willkommen bei CleanNet',setup_subtitle:'Bevor CleanNet die Windows-Proxy-Einstellungen aendert, sehen Sie genau was passiert und starten selbst.',
+  setup_intro:'CleanNet laeuft lokal auf Ihrem Computer. Es hoert auf 127.0.0.1, speichert Einstellungen in einem sichtbaren Ordner und aktiviert den Windows-Benutzerproxy erst nach Ihrer Bestaetigung.',
+  setup_local_title:'Nur lokal',setup_local_desc:'Dashboard und Proxy binden an 127.0.0.1. Es gibt kein Cloud-Konto und keine Fernsteuerung.',
+  setup_proxy_title:'Proxy mit Zustimmung',setup_proxy_desc:'Der Windows-Proxy bleibt aus, bis Sie Start CleanNet druecken. Sie koennen ihn im Tray oder Dashboard zuruecksetzen.',
+  setup_data_title:'Sichtbarer Datenordner',setup_data_desc:'Config, Logs, Statistiken und AI-Cache liegen in diesem Ordner und koennen geprueft oder geloescht werden.',
+  setup_data_folder:'Datenordner',setup_note:'CleanNet schreibt beim Start nur benutzerbezogene Windows-Proxy-Einstellungen. Es installiert keine Treiber, Dienste, Zertifikate oder systemweiten Hooks.',
+  setup_copy_path:'Ordnerpfad kopieren',setup_start:'CleanNet starten',setup_starting:'Startet...',setup_started:'CleanNet gestartet'
 });
 let L=localStorage.getItem('cleannet_lang')||navigator.language.slice(0,2);
 if(!I[L])L='en';
@@ -689,6 +757,7 @@ function applyLang(){
   const cdnD=document.getElementById('cdnDesc');if(cdnD)cdnD.textContent=t('cdn_help_desc');
   const cdnSR=document.getElementById('cdnStepsRow');if(cdnSR)cdnSR.innerHTML=[1,2,3,4].map(n=>'<div class="cdn-step"><span class="sn">'+n+'</span>'+t('cdn_step'+n)+'</div>').join('');
   updateCdnSnippet();
+  if(_onboarding)renderOnboarding(_onboarding);
   if(_performanceSettings)updatePerformanceUI(_performanceSettings,null,null);
   if(_lastPresetOptions.length){_presetSig='';renderPresetOptions(_lastPresetOptions)}
   renderNetworkFlows();
@@ -704,6 +773,7 @@ let _performanceDirty=false;
 let _performanceSaveSeq=0;
 let _performanceControlsBound=false;
 let _networkFlows=[];
+let _onboarding=null;
 es.onmessage=e=>{const d=JSON.parse(e.data);U(d)};
 function setMetric(id,value){
   const el=document.getElementById(id);if(!el)return;
@@ -782,8 +852,9 @@ function U(d){try{
   if(d.autostart!==undefined){document.getElementById('as').checked=d.autostart}
   if(d.privacy){
     const hdns=document.getElementById('hdns');if(hdns)hdns.checked=!!d.privacy.hide_dns;
-    const hsni=document.getElementById('hsni');if(hsni)hsni.checked=!!d.privacy.hide_sni;
+  const hsni=document.getElementById('hsni');if(hsni)hsni.checked=!!d.privacy.hide_sni;
   }
+  if(d.onboarding){renderOnboarding(d.onboarding)}
   if(d.performance){updatePerformanceUI(d.performance,d.network_diagnostics,d.network_flows_summary)}
   if(d.ping>0){pH.push(d.ping);if(pH.length>mP)pH.shift();dC()}
   if(d.active_connections){renderActive(d.active_connections)}
@@ -805,6 +876,49 @@ function U(d){try{
     l.scrollTop=l.scrollHeight;
     while(l.children.length>150)l.removeChild(l.firstChild)}
 }catch(e){console.error('U() error:',e)}}
+function renderOnboarding(data){
+  _onboarding=data;
+  const overlay=document.getElementById('setupOverlay');
+  if(!overlay)return;
+  if(data&&data.completed){
+    overlay.classList.remove('active');
+    return;
+  }
+  overlay.classList.add('active');
+  const path=document.getElementById('setupPath');
+  if(path)path.textContent=(data&&data.data_dir)||'--';
+  const btn=document.getElementById('setupStartBtn');
+  if(btn){btn.disabled=false;btn.textContent=t('setup_start')}
+}
+async function loadOnboarding(){
+  try{
+    const r=await fetch('/api/onboarding');
+    const d=await r.json();
+    renderOnboarding(d);
+  }catch(e){console.error('onboarding load error:',e)}
+}
+async function completeOnboarding(){
+  const btn=document.getElementById('setupStartBtn');
+  if(btn){btn.disabled=true;btn.textContent=t('setup_starting')}
+  try{
+    const r=await fetch('/api/onboarding/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+    const d=await r.json();
+    if(r.ok&&d.completed){
+      if(btn)btn.textContent=t('setup_started');
+      renderOnboarding(d);
+      U(await (await fetch('/api/stats')).json());
+    }else{
+      renderOnboarding(d);
+    }
+  }catch(e){
+    console.error('onboarding complete error:',e);
+    if(btn){btn.disabled=false;btn.textContent=t('setup_start')}
+  }
+}
+function copySetupPath(){
+  const p=(_onboarding&&_onboarding.data_dir)||document.getElementById('setupPath')?.textContent||'';
+  if(navigator.clipboard&&p)navigator.clipboard.writeText(p);
+}
 function markPerformanceDirty(){
   _performanceDirty=true;
 }
@@ -1549,6 +1663,7 @@ function initCardMotion(){
 initCardMotion();
 bindPerformanceControls();
 applyLang();
+loadOnboarding();
 loadStrategyCatalog();
 loadPerformanceSettings();
 // Initialize training intensity from server

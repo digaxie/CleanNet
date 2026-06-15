@@ -196,6 +196,25 @@ class BackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(repairs["count"], 2)
 
+    async def test_proxy_ownership_loop_skips_before_onboarding(self):
+        state = {"calls": 0}
+
+        def get_running():
+            state["calls"] += 1
+            return state["calls"] <= 2
+
+        repairs = {"count": 0}
+        ctx, _state, _cache = self._context(
+            get_running=get_running,
+            should_manage_proxy=lambda: False,
+            ensure_proxy_enabled=lambda: repairs.__setitem__("count", repairs["count"] + 1),
+        )
+        manager = BackgroundTaskManager(ctx)
+
+        await manager.proxy_ownership_loop()
+
+        self.assertEqual(repairs["count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

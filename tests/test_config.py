@@ -33,12 +33,16 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config["proxy_port"], 8080)
         self.assertEqual(config["dashboard_port"], 8888)
         self.assertEqual(config["proxy_bypass"], [])
-        self.assertTrue(config["privacy"]["hide_dns"])
-        self.assertTrue(config["privacy"]["hide_sni"])
+        self.assertFalse(config["privacy"]["hide_dns"])
+        self.assertFalse(config["privacy"]["hide_sni"])
         self.assertTrue(config["performance"]["low_latency_mode"])
         self.assertFalse(config["performance"]["background_training"])
         self.assertEqual(config["performance"]["ip_update_interval"], 1800)
+        self.assertTrue(config["setup"]["onboarding_completed"])
         self.assertGreaterEqual(len(errors), 4)
+
+    def test_default_config_requires_first_run_onboarding(self):
+        self.assertFalse(default_config()["setup"]["onboarding_completed"])
 
     def test_validate_removes_obsolete_vpn_keys(self):
         config, errors = validate_config({

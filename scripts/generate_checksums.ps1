@@ -11,7 +11,8 @@ if (-not (Test-Path -LiteralPath $distRoot)) {
 
 $targets = @(
     "CleanNet.exe",
-    "CleanNet-$version-portable.zip"
+    "CleanNet-$version-portable.zip",
+    "CleanNet-$version-setup.exe"
 )
 
 $lines = New-Object System.Collections.Generic.List[string]

@@ -24,12 +24,14 @@ class SettingsTests(unittest.TestCase):
             exe_path = os.path.join(tmp, "CleanNet.exe")
             bundled_app = os.path.join(bundle_tmp, "bypass_silent.pyw")
 
-            with patch("sys.frozen", True, create=True), patch("sys.executable", exe_path):
+            with patch("sys.frozen", True, create=True), patch("sys.executable", exe_path), patch.dict(
+                os.environ, {"LOCALAPPDATA": tmp}
+            ):
                 paths = build_app_paths(bundled_app)
 
-            self.assertEqual(paths.script_dir, os.path.abspath(tmp))
+            self.assertEqual(paths.script_dir, os.path.join(os.path.abspath(tmp), "CleanNet"))
             self.assertEqual(paths.app_file, os.path.abspath(exe_path))
-            self.assertEqual(paths.config_file, os.path.join(os.path.abspath(tmp), "config.json"))
+            self.assertEqual(paths.config_file, os.path.join(os.path.abspath(tmp), "CleanNet", "config.json"))
 
     def test_build_app_paths_uses_project_root_for_dev_dist_exe(self):
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as bundle_tmp:

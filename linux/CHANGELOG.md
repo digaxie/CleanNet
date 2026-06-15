@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.1 - 2026-06-15
+
+- Version aligned with the unified Windows/Linux release.
+
 ## Linux cleanup
 
 - Converted runtime entrypoint to `python -m cleannet`.
