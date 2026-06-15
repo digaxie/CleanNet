@@ -115,6 +115,20 @@ class _ExitCalled(Exception):
         self.code = code
 
 
+class _SessionWatcher:
+    def __init__(self, on_session_end, logger):
+        self.on_session_end = on_session_end
+        self.logger = logger
+        self.started = 0
+        self.stopped = 0
+
+    def start(self):
+        self.started += 1
+
+    def stop(self):
+        self.stopped += 1
+
+
 class CleanNetAppTests(unittest.IsolatedAsyncioTestCase):
     def _context(self, **overrides):
         state = {
@@ -123,6 +137,7 @@ class CleanNetAppTests(unittest.IsolatedAsyncioTestCase):
             "stats": 0,
             "recover": 0,
             "tasks": 0,
+            "urls": [],
         }
         logger = _Logger()
 
@@ -155,6 +170,7 @@ class CleanNetAppTests(unittest.IsolatedAsyncioTestCase):
             force_save=lambda: state.__setitem__("saved", state["saved"] + 1),
             save_stats=lambda: state.__setitem__("stats", state["stats"] + 1),
             recover_proxy=lambda: state.__setitem__("recover", state["recover"] + 1),
+            open_url=lambda url: state["urls"].append(url),
             create_task=create_task,
             event_factory=_Event,
             exit_func=exit_func,
@@ -313,6 +329,116 @@ class CleanNetAppTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(app.status, "stopped")
         self.assertTrue(event.set_called)
         self.assertIn(("warning", "Tray loop ended unexpectedly; continuing without tray"), logger.messages)
+
+    def test_start_waits_for_first_run_onboarding_before_proxy_enable(self):
+        event = _Event()
+        sleep_calls = {"count": 0}
+        app_ref = {}
+
+        def sleep(_seconds):
+            sleep_calls["count"] += 1
+            app_ref["app"].running = False
+
+        ctx, logger, state = self._context(
+            is_onboarding_complete=lambda: False,
+            event_factory=lambda: event,
+            instance_factory=lambda _name: _Lock(),
+            thread_factory=_Thread,
+            new_event_loop=lambda: _Loop(),
+            sleep=sleep,
+        )
+        app = CleanNetApp(ctx)
+        app_ref["app"] = app
+
+        def fake_run_async_loop(_loop):
+            app.shutdown_event = event
+            app.running = True
+            app.status = "running"
+            app.port_ready.set()
+
+        app.run_async_loop = fake_run_async_loop
+
+        app.start()
+
+        self.assertEqual(state["proxy"], [])
+        self.assertEqual(state["recover"], 1)
+        self.assertEqual(state["urls"], ["http://127.0.0.1:8888/?setup=1"])
+        self.assertIn(("info", "First-run setup pending; system proxy is not enabled yet"), logger.messages)
+
+    def test_enable_system_proxy_after_onboarding_sets_ownership_once(self):
+        ctx, _logger, state = self._context()
+        app = CleanNetApp(ctx)
+
+        self.assertTrue(app.enable_system_proxy())
+        self.assertTrue(app.enable_system_proxy())
+
+        self.assertEqual(state["proxy"], [True])
+        self.assertEqual(state["recover"], 1)
+        self.assertTrue(app.proxy_owned)
+
+    def test_on_session_end_restores_proxy_without_exiting(self):
+        ctx, _logger, state = self._context()
+        app = CleanNetApp(ctx)
+        app.proxy_owned = True
+
+        app.on_session_end()  # must not raise / must not call exit_func
+
+        self.assertEqual(state["proxy"], [False])
+        self.assertEqual(state["saved"], 1)
+        self.assertEqual(state["stats"], 1)
+        self.assertFalse(app.proxy_owned)
+
+    def test_on_session_end_does_not_touch_proxy_when_not_owned(self):
+        ctx, _logger, state = self._context()
+        app = CleanNetApp(ctx)
+
+        app.on_session_end()
+
+        self.assertEqual(state["proxy"], [])
+        self.assertEqual(state["saved"], 1)
+        self.assertEqual(state["stats"], 1)
+
+    def test_start_starts_and_stops_session_watcher(self):
+        event = _Event()
+        icon = _TrayIcon()
+        app_ref = {}
+        created = {}
+
+        def sleep(_seconds):
+            app_ref["app"].running = False
+
+        def watcher_factory(on_session_end, logger):
+            created["watcher"] = _SessionWatcher(on_session_end, logger)
+            return created["watcher"]
+
+        ctx, _logger, _state = self._context(
+            tray_available=True,
+            tray_manager=_TrayManager(icon),
+            event_factory=lambda: event,
+            instance_factory=lambda _name: _Lock(),
+            thread_factory=_Thread,
+            new_event_loop=lambda: _Loop(),
+            sleep=sleep,
+            session_watcher_factory=watcher_factory,
+        )
+        app = CleanNetApp(ctx)
+        app_ref["app"] = app
+
+        def fake_run_async_loop(_loop):
+            app.shutdown_event = event
+            app.running = True
+            app.status = "running"
+            app.port_ready.set()
+
+        app.run_async_loop = fake_run_async_loop
+
+        app.start()
+
+        watcher = created["watcher"]
+        self.assertEqual(watcher.started, 1)
+        self.assertEqual(watcher.stopped, 1)
+        self.assertEqual(watcher.on_session_end, app.on_session_end)
+        self.assertIsNone(app.session_watcher)
 
 
 if __name__ == "__main__":

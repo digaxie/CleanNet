@@ -34,11 +34,13 @@ from .strategy_catalog import AI_TRAIN_PROFILES, STRATEGY_ORDER
 from .training import TrainingManager, TrainingRuntimeContext
 from .tray import TRAY_AVAILABLE, TrayManager, TrayRuntimeContext
 from .windows_integration import (
+    SessionEndWatcher,
     ensure_system_proxy_enabled,
     get_autostart as _win_get_autostart,
     recover_orphaned_proxy,
     set_autostart as _win_set_autostart,
     set_system_proxy,
+    wait_for_network_ready,
 )
 
 
@@ -105,7 +107,7 @@ class CleanNetRuntime:
         self.state.apply_config(self.load_config(), build_lists_from_config)
         self.settings = build_runtime_settings(self.state.config)
         self.refresh_runtime_contexts()
-        if self.get_running():
+        if self.get_running() and self.app and self.app.proxy_owned:
             self.set_proxy(True, self.settings.local_host, self.settings.local_port)
         self.logger.info(
             f"Config reloaded: {len(self.state.site_names)} sites, "
@@ -197,6 +199,31 @@ class CleanNetRuntime:
         }
         return performance
 
+    def is_onboarding_complete(self) -> bool:
+        setup = self.state.config.get("setup", {})
+        return bool(setup.get("onboarding_completed", True))
+
+    def get_onboarding_status(self) -> dict[str, Any]:
+        return {
+            "completed": self.is_onboarding_complete(),
+            "data_dir": self.paths.script_dir,
+            "proxy_host": self.settings.local_host,
+            "proxy_port": self.settings.local_port,
+            "dashboard_port": self.settings.web_port,
+            "site_names": list(self.state.site_names),
+            "version": __version__,
+        }
+
+    def complete_onboarding(self) -> bool:
+        setup = self.state.config.setdefault("setup", {})
+        setup["onboarding_completed"] = True
+        self.save_config()
+        self.reload_config_dynamically()
+        if self.app and self.app.running:
+            self.app.enable_system_proxy()
+        self.logger.info("[SETUP] First-run onboarding completed")
+        return True
+
     def get_network_flows(self) -> dict[str, Any]:
         return self.network_monitor.snapshot(
             self.state.config.get("proxy_bypass", []),
@@ -237,6 +264,15 @@ class CleanNetRuntime:
             self.state.config.get("proxy_bypass", []),
             logger=self.logger,
         )
+
+    def wait_for_network(self) -> bool:
+        return wait_for_network_ready(
+            probe_host=self.settings.ping_target_host,
+            logger=self.logger,
+        )
+
+    def should_manage_proxy(self) -> bool:
+        return self.is_onboarding_complete() and bool(self.app and self.app.proxy_owned)
 
     def get_autostart(self) -> bool:
         return _win_get_autostart(self.settings.autostart_reg_name)
@@ -335,6 +371,7 @@ class CleanNetRuntime:
             ensure_proxy_enabled=self.ensure_proxy,
             parse_iso=_parse_iso,
             now_iso=lambda: datetime.now().isoformat(timespec="seconds"),
+            should_manage_proxy=self.should_manage_proxy,
         )
 
     def build_training_context(self) -> TrainingRuntimeContext:
@@ -418,6 +455,8 @@ class CleanNetRuntime:
             set_autostart=self.set_autostart,
             get_privacy_settings=self.state.get_privacy_settings,
             get_performance_settings=self.get_performance_settings,
+            get_onboarding_status=self.get_onboarding_status,
+            complete_onboarding=self.complete_onboarding,
             get_network_flows=self.get_network_flows,
             test_site_connection=self.background_tasks.test_site_connection,
             get_running=self.get_running,
@@ -494,6 +533,11 @@ class CleanNetRuntime:
                 self.settings.local_port,
                 self.paths.script_dir,
                 logger=self.logger,
+            ),
+            is_onboarding_complete=self.is_onboarding_complete,
+            wait_for_network=self.wait_for_network,
+            session_watcher_factory=lambda on_session_end, logger: SessionEndWatcher(
+                on_session_end, logger=logger
             ),
         )
 

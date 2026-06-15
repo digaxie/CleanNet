@@ -32,6 +32,8 @@ CleanNet does not install drivers, does not decrypt HTTPS, and does not require 
 - Optional user-level autostart registry entry.
 - Local files in the application directory.
 
+On exit, and on Windows logoff/restart/shutdown, CleanNet restores your original `HKCU` proxy settings (it removes only its own entry). This cleanup adds no autostart, no scheduled task, no network listener, and no elevation; it never blocks or delays shutdown.
+
 ### What CleanNet Does Not Do
 
 - No telemetry.
@@ -107,6 +109,8 @@ CleanNet driver kurmaz, HTTPS trafiğini çözmez ve normal kullanım için yön
 - İsteğe bağlı kullanıcı seviyesinde autostart registry girdisi.
 - Uygulama klasöründeki yerel dosyalar.
 
+Çıkışta ve Windows oturum kapatma/yeniden başlatma/kapatma anında, CleanNet sizin orijinal `HKCU` proxy ayarlarınızı geri yükler (yalnızca kendi eklediği girdiyi kaldırır). Bu temizlik hiçbir autostart, zamanlanmış görev, ağ dinleyicisi veya yönetici yetkisi eklemez; kapanmayı asla engellemez veya geciktirmez.
+
 ### CleanNet Ne Yapmaz
 
 - Telemetri yok.
@@ -181,6 +185,8 @@ CleanNet installiert keine Treiber, entschlüsselt kein HTTPS und benötigt für
 - Benutzerbezogene Windows Proxy-Einstellungen.
 - Optionale Autostart-Registry-Einträge im Benutzerkontext.
 - Lokale Dateien im Anwendungsverzeichnis.
+
+Beim Beenden sowie bei Windows-Abmeldung/-Neustart/-Herunterfahren stellt CleanNet Ihre ursprünglichen `HKCU`-Proxy-Einstellungen wieder her (es entfernt nur seinen eigenen Eintrag). Diese Bereinigung fügt keinen Autostart, keine geplante Aufgabe, keinen Netzwerk-Listener und keine Rechteerhöhung hinzu; sie blockiert oder verzögert das Herunterfahren niemals.
 
 ### Was CleanNet Nicht Macht
 

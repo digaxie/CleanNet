@@ -1,4 +1,4 @@
-# Release Guide
+﻿# Release Guide
 
 This repository is source-first. End-user binaries should normally be uploaded to GitHub Releases, not committed to the main branch.
 
@@ -13,6 +13,7 @@ This repository is source-first. End-user binaries should normally be uploaded t
   - `bypass.log`
 - `.gitignore` excludes local cache/build output.
 - `README.md`, `SECURITY.md`, and `PRIVACY.md` explain EXE and source/BAT usage.
+- Classic installer explains install location, local proxy behavior, data folder, and safety boundaries before launch.
 - Release assets include SHA-256 hashes.
 
 ## Build Portable ZIP
@@ -23,8 +24,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_release.ps1
 
 Output:
 
-- `dist\CleanNet-2.0\`
-- `dist\CleanNet-2.0-portable.zip`
+- `dist\CleanNet-2.1.1\`
+- `dist\CleanNet-2.1.1-portable.zip`
 
 ## Build EXE
 
@@ -36,6 +37,32 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_exe.ps1
 Output:
 
 - `dist\CleanNet.exe`
+
+## Build Classic Installer
+
+Install Inno Setup 6 first:
+
+```text
+https://jrsoftware.org/isdl.php
+```
+
+Then run:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_installer.ps1
+```
+
+Output:
+
+- `dist\CleanNet-2.1.1-setup.exe`
+
+The installer is per-user by default:
+
+- Application files: `%LOCALAPPDATA%\Programs\CleanNet`
+- Runtime data: `%LOCALAPPDATA%\CleanNet`
+- No driver, service, root certificate, browser extension, or system-wide hook.
+- Windows proxy is changed only after CleanNet is launched.
+- Installer builds use a PyInstaller `onedir` app bundle to reduce antivirus issues caused by one-file self-extraction.
 
 ## Full Quality Gate
 
@@ -64,42 +91,20 @@ Output:
 
 Upload these files to GitHub Releases:
 
+- `dist\CleanNet-2.1.1-setup.exe`
 - `dist\CleanNet.exe`
-- `dist\CleanNet-2.0-portable.zip`
+- `dist\CleanNet-2.1.1-portable.zip`
 - `dist\SHA256SUMS.txt`
-
-
-## Linux Release Requirements
-
-- All tests must pass using `./run_tests.sh` inside the `linux/` directory.
-- Compile and run quality checks using `./scripts/verify_linux_release.sh` inside the `linux/` directory.
-- `linux/cleannet/ai_strategy.json` and other dynamic files must be excluded from tracking.
-
-## Build Linux Tarball
-
-Run inside the `linux/` directory:
-
-```bash
-./scripts/build_linux_release.sh
-```
-
-Output:
-
-- `linux/dist/cleannet-linux-2.1/`
-- `linux/dist/cleannet-linux-2.1.tar.gz`
-- `linux/dist/SHA256SUMS.txt`
-
-Upload these files to GitHub Releases along with the Windows binaries.
 
 ## Suggested GitHub Release Text
 
 ```text
-CleanNet v2.1 (Linux & Windows)
+CleanNet v2.1.1
 
 Install options:
-1. CleanNet.exe - fastest path for normal Windows users.
-2. CleanNet-2.0-portable.zip - readable source/BAT path for Windows users who prefer auditable files.
-3. cleannet-linux-2.1.tar.gz - prepackaged release for Linux users. Open terminal, extract it, and run: ./cleannet-launcher.sh
+1. CleanNet-2.1.1-setup.exe - recommended classic installer with setup explanation.
+2. CleanNet.exe - standalone no-install executable.
+3. CleanNet-2.1.1-portable.zip - readable source/BAT path for users who do not trust EXE files.
 
 Default public configuration includes Discord only.
 
@@ -107,4 +112,3 @@ Verify downloads with SHA256SUMS.txt.
 Dashboard: http://127.0.0.1:8888
 Proxy: 127.0.0.1:8080
 ```
-

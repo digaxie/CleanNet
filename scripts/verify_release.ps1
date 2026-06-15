@@ -137,7 +137,9 @@ function Invoke-ExeSmoke {
     Start-Sleep -Seconds 2
 
     try {
+        $env:CLEANNET_NO_AUTO_OPEN = "1"
         $started = Start-Process -FilePath $exePath -WindowStyle Hidden -PassThru
+        Remove-Item Env:\CLEANNET_NO_AUTO_OPEN -ErrorAction SilentlyContinue
         Start-Sleep -Seconds 10
 
         $statsBytes = Test-HttpEndpoint "/api/stats"
@@ -145,6 +147,7 @@ function Invoke-ExeSmoke {
         $aiBytes = Test-HttpEndpoint "/api/ai-stats"
         $trainBytes = Test-HttpEndpoint "/api/train-status"
         $performanceBytes = Test-HttpEndpoint "/api/performance-settings"
+        $onboardingBytes = Test-HttpEndpoint "/api/onboarding"
         $flowsBytes = Test-HttpEndpoint "/api/network-flows"
         $strategyCatalogBytes = Test-HttpEndpoint "/api/strategy-catalog"
 
@@ -161,8 +164,9 @@ function Invoke-ExeSmoke {
             throw "CleanNet.exe process is not running after smoke test"
         }
 
-        return "PID=$($started.Id); active=$($processes.ProcessId -join ','); stats=$statsBytes; diagnostics=$diagnosticsBytes; ai=$aiBytes; train=$trainBytes; performance=$performanceBytes; flows=$flowsBytes; strategy=$strategyCatalogBytes"
+        return "PID=$($started.Id); active=$($processes.ProcessId -join ','); stats=$statsBytes; diagnostics=$diagnosticsBytes; ai=$aiBytes; train=$trainBytes; performance=$performanceBytes; onboarding=$onboardingBytes; flows=$flowsBytes; strategy=$strategyCatalogBytes"
     } finally {
+        Remove-Item Env:\CLEANNET_NO_AUTO_OPEN -ErrorAction SilentlyContinue
         Stop-CleanNetProcesses
         Start-Sleep -Seconds 2
     }

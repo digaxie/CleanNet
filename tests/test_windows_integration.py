@@ -1,8 +1,10 @@
 import unittest
 from unittest.mock import patch
 
+import cleannet.windows_integration as wi
 from cleannet.windows_integration import (
     CONNECTION_PROXY_FLAG,
+    SessionEndWatcher,
     _build_connection_settings_blob,
     _unpack_dword,
     build_bypass_list,
@@ -144,6 +146,41 @@ class WindowsIntegrationTests(unittest.TestCase):
             ))
 
         refresh.assert_not_called()
+
+
+class SessionEndWatcherTests(unittest.TestCase):
+    def test_fire_runs_callback_exactly_once(self):
+        calls = {"n": 0}
+        watcher = SessionEndWatcher(lambda: calls.__setitem__("n", calls["n"] + 1))
+
+        watcher._fire()
+        watcher._fire()
+
+        self.assertEqual(calls["n"], 1)
+
+    def test_fire_swallows_callback_errors(self):
+        class _Logger:
+            def __init__(self):
+                self.errors = []
+
+            def error(self, message):
+                self.errors.append(message)
+
+        def boom():
+            raise RuntimeError("nope")
+
+        logger = _Logger()
+        watcher = SessionEndWatcher(boom, logger=logger)
+
+        watcher._fire()  # must not raise
+
+        self.assertTrue(logger.errors)
+
+    def test_start_and_stop_are_safe_without_ctypes(self):
+        watcher = SessionEndWatcher(lambda: None)
+        with patch.object(wi, "ctypes", None):
+            self.assertFalse(watcher.start())
+            watcher.stop()  # must not raise
 
 
 if __name__ == "__main__":

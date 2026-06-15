@@ -59,6 +59,7 @@ class BackgroundTaskContext:
     ensure_proxy_enabled: Callable[[], Any] | None
     parse_iso: Callable[[str | None], float | None]
     now_iso: Callable[[], str]
+    should_manage_proxy: Callable[[], bool] = lambda: True
     open_connection: Callable[..., Awaitable[tuple[Reader, Writer]]] = asyncio.open_connection
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
     perf_counter: Callable[[], float] = time.perf_counter
@@ -149,12 +150,15 @@ class BackgroundTaskManager:
         await self.ctx.sleep(5)
         await self.ctx.resolve_bypass_ips()
         await self.measure_ping()
-        if self.ctx.ensure_proxy_enabled:
+        if self.ctx.ensure_proxy_enabled and self.ctx.should_manage_proxy():
             self.ctx.ensure_proxy_enabled()
-        self.ctx.notify(
-            "DPI Bypass",
-            f"Active - {len(self.ctx.get_bypass_ips())} IPs, {len(self.ctx.get_bypass_domains())} domains",
-        )
+        if self.ctx.should_manage_proxy():
+            self.ctx.notify(
+                "DPI Bypass",
+                f"Active - {len(self.ctx.get_bypass_ips())} IPs, {len(self.ctx.get_bypass_domains())} domains",
+            )
+        else:
+            self.ctx.notify("CleanNet Setup", "Waiting for first-run confirmation")
 
         last_ip_update = self.ctx.time_func()
         while self.ctx.get_running():
@@ -164,7 +168,7 @@ class BackgroundTaskManager:
             await self.measure_ping()
             self.ctx.strategy_cache._save_if_needed()
             self.ctx.save_stats()
-            if self.ctx.ensure_proxy_enabled:
+            if self.ctx.ensure_proxy_enabled and self.ctx.should_manage_proxy():
                 self.ctx.ensure_proxy_enabled()
 
             if self.ctx.time_func() - last_ip_update > self.ctx.ip_update_interval:
@@ -174,7 +178,7 @@ class BackgroundTaskManager:
     async def proxy_ownership_loop(self) -> None:
         await self.ctx.sleep(2)
         while self.ctx.get_running():
-            if self.ctx.ensure_proxy_enabled:
+            if self.ctx.ensure_proxy_enabled and self.ctx.should_manage_proxy():
                 self.ctx.ensure_proxy_enabled()
             await self.ctx.sleep(self.ctx.proxy_watch_interval)
 

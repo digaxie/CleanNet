@@ -57,6 +57,6 @@
     "ping_target_host": "1.1.1.1"
   },
   "setup": {
-    "onboarding_completed": false
+    "onboarding_completed": true
   }
 }

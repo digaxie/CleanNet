@@ -1,4 +1,9 @@
-# Changelog
+﻿# Changelog
+
+## 2.1.1 - 2026-06-15
+
+- Fixed a startup issue where enabling autostart could leave the machine without internet after a reboot. CleanNet took over the Windows system proxy before the network stack (DHCP/DNS) was ready, routing all traffic through the local engine while it could not yet reach upstream, so connections were blackholed until CleanNet was manually restarted. CleanNet now waits for confirmed connectivity (DNS resolution plus a live TCP connection to a public endpoint, up to 120 seconds) before activating the system proxy at startup.
+- Added a Windows session-end safeguard: on logoff, restart, or shutdown — even without choosing Exit first — CleanNet restores the user's original proxy settings before the process terminates, so a stale proxy never affects the next boot.
 
 ## 2.1 Linux Compatibility Release - 2026-05-28
 
@@ -12,7 +17,6 @@
 - Added optional `pystray` fallback tray.
 - Added full Linux quality gate shell scripts: `run_tests.sh`, `scripts/build_linux_release.sh`, and `scripts/verify_linux_release.sh`.
 - Excluded Windows-specific scripts, batch files, and installers from the Linux directory.
-- Updated main `README.md` to document Linux-specific startup, configuration, requirements, and instructions.
 
 ## 2.0 Public GitHub Package - 2026-05-01
 
@@ -20,6 +24,10 @@
 - Added OpenAI/ChatGPT/VS Code developer endpoints to the built-in proxy bypass list.
 - Changed non-configured passthrough domains to use a plain tunnel instead of DNS/SNI privacy shielding, avoiding breakage in apps such as VS Code extensions.
 - Fixed Performance dashboard toggles so Low Latency Mode and Background AI Training preserve user changes while live stats refresh.
+- Added a classic per-user Inno Setup installer script with a pre-install trust explanation, default install path, runtime data path, optional desktop shortcut, and safe uninstall proxy cleanup.
+- Changed the setup installer to install a PyInstaller `onedir` app bundle instead of launching the packed one-file EXE, reducing first-launch antivirus lockups.
+- Added first-run onboarding so a fresh EXE shows a local setup screen and waits for user confirmation before enabling Windows proxy.
+- Moved standalone EXE runtime data to a visible `%LOCALAPPDATA%\CleanNet` folder while keeping source/dev builds local to the project folder.
 - Prepared a clean public repository package in a separate publishing folder.
 - Replaced the GitHub README with a full Turkish, English, and German end-user guide.
 - Rewrote security and privacy documentation with explicit local-only behavior, EXE trust notes, registry scope, and verification steps.

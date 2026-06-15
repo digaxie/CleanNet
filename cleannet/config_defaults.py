@@ -62,6 +62,9 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "ip_update_interval": 1800,
         "ping_target_host": "1.1.1.1",
     },
+    "setup": {
+        "onboarding_completed": False,
+    },
 }
 
 

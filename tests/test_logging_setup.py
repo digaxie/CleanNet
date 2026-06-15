@@ -44,6 +44,20 @@ class LoggingSetupTests(unittest.TestCase):
             self.assertEqual(len(setup.logger.handlers), 1)
             self.assertIn("hello dashboard", entries[0][1])
 
+    def test_setup_logging_creates_data_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = os.path.join(tmp, "CleanNet")
+
+            setup = setup_logging(
+                data_dir,
+                logger_name=f"cleannet-test-dir-{id(self)}",
+                env={"DPI_BYPASS_NO_DISK_LOG": "1"},
+                reset_handlers=True,
+            )
+
+            self.assertTrue(os.path.isdir(data_dir))
+            self.assertEqual(setup.log_file, os.path.join(data_dir, "bypass.log"))
+
 
 if __name__ == "__main__":
     unittest.main()

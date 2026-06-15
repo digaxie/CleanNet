@@ -20,8 +20,7 @@ build/
 CleanNet.spec
 *.manifest
 
-# Release artifacts are generated locally and uploaded to GitHub Releases.
-# Keep them out of normal source commits unless you intentionally vendor binaries.
+
 dist/
 
 # Local editor/system files

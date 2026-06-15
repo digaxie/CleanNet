@@ -138,6 +138,16 @@ class DashboardServerTests(unittest.IsolatedAsyncioTestCase):
             set_autostart=lambda _value: None,
             get_privacy_settings=lambda: {"hide_dns": False, "hide_sni": False},
             get_performance_settings=lambda: config["performance"],
+            get_onboarding_status=lambda: {
+                "completed": config.setdefault("setup", {}).get("onboarding_completed", True),
+                "data_dir": ".",
+                "proxy_host": "127.0.0.1",
+                "proxy_port": 8080,
+                "dashboard_port": 8888,
+                "site_names": list(config["sites"].keys()),
+                "version": "9.9.9",
+            },
+            complete_onboarding=lambda: config.setdefault("setup", {}).__setitem__("onboarding_completed", True) is None,
             get_network_flows=lambda: {
                 "supported": True,
                 "flows": [
@@ -223,6 +233,26 @@ class DashboardServerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(server.ctx.get_config()["performance"]["health_check_interval"], 300)
         self.assertEqual(server.ctx.get_config()["performance"]["ip_update_interval"], 900)
         self.assertEqual(server.ctx.get_config()["performance"]["ping_target_host"], "8.8.8.8")
+
+    async def test_onboarding_endpoint_completes_setup(self):
+        server, _state = self._server()
+        server.ctx.get_config()["setup"] = {"onboarding_completed": False}
+
+        writer = _Writer()
+        await server.handle_http(
+            _Reader(b"GET /api/onboarding HTTP/1.1\r\nHost: x\r\n\r\n"),
+            writer,
+        )
+        self.assertIn(b'"completed": false', bytes(writer.data))
+
+        writer = _Writer()
+        await server.handle_http(
+            _Reader(b"POST /api/onboarding/complete HTTP/1.1\r\nHost: x\r\n\r\n", b"{}"),
+            writer,
+        )
+
+        self.assertIn(b"200 OK", bytes(writer.data))
+        self.assertTrue(server.ctx.get_config()["setup"]["onboarding_completed"])
 
     async def test_network_exception_endpoint_adds_single_and_process_entries(self):
         server, _state = self._server()

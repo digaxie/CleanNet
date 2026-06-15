@@ -1,0 +1,83 @@
+CleanNet Setup Information
+==========================
+
+English
+-------
+
+CleanNet is a local Windows proxy tool. This installer is intentionally simple and transparent.
+
+What will be installed:
+- Application files: %LOCALAPPDATA%\Programs\CleanNet
+- Runtime data: %LOCALAPPDATA%\CleanNet
+- Start Menu shortcut: CleanNet
+- Optional desktop shortcut, only if you select it
+
+What CleanNet does not install:
+- No driver
+- No Windows service
+- No root certificate
+- No browser extension
+- No system-wide hook
+- No telemetry or analytics component
+
+How network settings work:
+- CleanNet listens locally on 127.0.0.1:8080.
+- The dashboard opens locally at http://127.0.0.1:8888.
+- CleanNet changes only the current Windows user's proxy settings.
+- Proxy settings are enabled only when CleanNet is running.
+- CleanNet saves the previous proxy state and restores it on normal exit.
+- The uninstaller also disables the CleanNet proxy if Windows is still pointing to 127.0.0.1:8080.
+
+Turkce
+------
+
+CleanNet yerel calisan bir Windows proxy aracidir. Bu kurulum bilerek sade ve seffaf tasarlanmistir.
+
+Kurulacak alanlar:
+- Uygulama dosyalari: %LOCALAPPDATA%\Programs\CleanNet
+- Calisma verileri: %LOCALAPPDATA%\CleanNet
+- Baslat Menusu kisayolu: CleanNet
+- Masaustu kisayolu, yalnizca siz secerseniz olusturulur
+
+CleanNet sunlari kurmaz:
+- Surucu kurmaz
+- Windows servisi kurmaz
+- Kok sertifika kurmaz
+- Tarayici eklentisi kurmaz
+- Sistem geneli hook kurmaz
+- Telemetri veya analiz bileseni kurmaz
+
+Ag ayarlari nasil calisir:
+- CleanNet sadece yerelde 127.0.0.1:8080 adresinde dinler.
+- Dashboard sadece yerelde http://127.0.0.1:8888 adresinden acilir.
+- CleanNet yalnizca mevcut Windows kullanicisinin proxy ayarlarini degistirir.
+- Proxy ayarlari yalnizca CleanNet calisirken etkin olur.
+- CleanNet onceki proxy durumunu kaydeder ve normal cikista geri yukler.
+- Kaldirici, Windows hala 127.0.0.1:8080 adresine bakiyorsa CleanNet proxy ayarini kapatir.
+
+Deutsch
+-------
+
+CleanNet ist ein lokal laufendes Windows-Proxy-Tool. Dieses Setup ist bewusst einfach und transparent.
+
+Installiert wird:
+- Programmdateien: %LOCALAPPDATA%\Programs\CleanNet
+- Laufzeitdaten: %LOCALAPPDATA%\CleanNet
+- Startmenue-Verknuepfung: CleanNet
+- Optionale Desktop-Verknuepfung, nur wenn Sie sie auswaehlen
+
+CleanNet installiert nicht:
+- Keinen Treiber
+- Keinen Windows-Dienst
+- Kein Root-Zertifikat
+- Keine Browser-Erweiterung
+- Keinen systemweiten Hook
+- Keine Telemetrie- oder Analyse-Komponente
+
+So funktionieren die Netzwerkeinstellungen:
+- CleanNet lauscht lokal auf 127.0.0.1:8080.
+- Das Dashboard ist lokal unter http://127.0.0.1:8888 erreichbar.
+- CleanNet aendert nur die Proxy-Einstellungen des aktuellen Windows-Benutzers.
+- Proxy-Einstellungen werden nur aktiviert, wenn CleanNet laeuft.
+- CleanNet speichert den vorherigen Proxy-Zustand und stellt ihn beim normalen Beenden wieder her.
+- Der Uninstaller deaktiviert den CleanNet-Proxy, falls Windows noch auf 127.0.0.1:8080 zeigt.

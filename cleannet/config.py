@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 from typing import Any
 
 from .config_defaults import DEFAULT_CONFIG
@@ -35,11 +36,11 @@ def validate_config(config: Any) -> tuple[dict[str, Any] | None, list[str]]:
         config["privacy"] = {}
         errors.append("Missing or invalid 'privacy' - reset to defaults")
     if not isinstance(config["privacy"].get("hide_dns"), bool):
-        config["privacy"]["hide_dns"] = True
-        errors.append("Missing or invalid 'privacy.hide_dns' - reset to True")
+        config["privacy"]["hide_dns"] = False
+        errors.append("Missing or invalid 'privacy.hide_dns' - reset to False")
     if not isinstance(config["privacy"].get("hide_sni"), bool):
-        config["privacy"]["hide_sni"] = True
-        errors.append("Missing or invalid 'privacy.hide_sni' - reset to True")
+        config["privacy"]["hide_sni"] = False
+        errors.append("Missing or invalid 'privacy.hide_sni' - reset to False")
     if "performance" not in config or not isinstance(config.get("performance"), dict):
         config["performance"] = {}
         errors.append("Missing or invalid 'performance' - reset to defaults")
@@ -59,6 +60,13 @@ def validate_config(config: Any) -> tuple[dict[str, Any] | None, list[str]]:
     if not isinstance(performance.get("ping_target_host"), str) or not performance["ping_target_host"].strip():
         performance["ping_target_host"] = "1.1.1.1"
         errors.append("Missing or invalid 'performance.ping_target_host' - reset to 1.1.1.1")
+    if "setup" not in config or not isinstance(config.get("setup"), dict):
+        config["setup"] = {"onboarding_completed": True}
+        errors.append("Missing or invalid 'setup' - marked onboarding complete for existing config")
+    setup = config["setup"]
+    if not isinstance(setup.get("onboarding_completed"), bool):
+        setup["onboarding_completed"] = False
+        errors.append("Missing or invalid 'setup.onboarding_completed' - reset to False")
 
     bad_sites: list[str] = []
     for name, site in list(config["sites"].items()):
@@ -124,6 +132,7 @@ def load_config_file(path: str, logger=None) -> dict[str, Any]:
 
 
 def save_config_file(path: str, config: dict[str, Any], indent: int = 4) -> None:
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=indent, ensure_ascii=False)
 

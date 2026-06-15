@@ -61,6 +61,8 @@ Optional autostart writes:
 HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CleanNetDPIBypass
 ```
 
+When you exit CleanNet, and when Windows logs off, restarts, or shuts down, CleanNet restores the original values it backed up in `proxy_state.json` and removes its own proxy entry. This ensures a reboot never leaves the system proxy pointing at the stopped local engine.
+
 ## Türkçe
 
 CleanNet telemetrisiz ve yerel öncelikli olacak şekilde tasarlanmıştır.
@@ -120,6 +122,8 @@ Opsiyonel autostart şuraya yazılır:
 HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CleanNetDPIBypass
 ```
 
+CleanNet'ten çıktığınızda ve Windows oturumu kapatıldığında, yeniden başlatıldığında veya kapatıldığında, CleanNet `proxy_state.json` içinde yedeklediği orijinal değerleri geri yükler ve kendi proxy girdisini kaldırır. Böylece yeniden başlatma, sistem proxy'sini durmuş yerel motora bağlı bırakmaz.
+
 ## Deutsch
 
 CleanNet ist als telemetrieloses, lokal orientiertes Tool konzipiert.
@@ -178,3 +182,5 @@ Optionaler Autostart:
 ```text
 HKCU\Software\Microsoft\Windows\CurrentVersion\Run\CleanNetDPIBypass
 ```
+
+Beim Beenden von CleanNet sowie bei Windows-Abmeldung, -Neustart oder -Herunterfahren stellt CleanNet die in `proxy_state.json` gesicherten ursprünglichen Werte wieder her und entfernt seinen eigenen Proxy-Eintrag. So zeigt der System-Proxy nach einem Neustart nie auf die gestoppte lokale Engine.

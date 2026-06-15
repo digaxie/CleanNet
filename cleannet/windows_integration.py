@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import socket
 import sys
+import threading
 import time
 from typing import Any
 
@@ -21,6 +23,13 @@ CONNECTIONS_KEY = INTERNET_SETTINGS_KEY + r"\Connections"
 AUTOSTART_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 PROXY_BACKUP_FILE = "proxy_state.json"
 CONNECTION_PROXY_FLAG = 0x02
+
+# Win32 messages used by SessionEndWatcher to learn that Windows is logging off,
+# restarting, or shutting down. https://learn.microsoft.com/windows/win32/shutdown
+WM_DESTROY = 0x0002
+WM_CLOSE = 0x0010
+WM_QUERYENDSESSION = 0x0011
+WM_ENDSESSION = 0x0016
 
 
 def build_bypass_list(always_bypass: list[str], user_bypass: list[str] | None = None) -> str:
@@ -414,6 +423,227 @@ def set_system_proxy(
         if logger:
             logger.error(f"Proxy settings error: {e}")
         return False
+
+
+def _dns_and_route_ready(probe_host: str, probe_port: int, dns_probe_hosts: list[str]) -> bool:
+    # Passthrough traffic relies on the system resolver, so DNS must work...
+    resolved = False
+    for name in dns_probe_hosts:
+        try:
+            socket.getaddrinfo(name, probe_port)
+            resolved = True
+            break
+        except OSError:
+            continue
+    if not resolved:
+        return False
+    # ...and we must be able to reach a public endpoint over TCP.
+    try:
+        with socket.create_connection((probe_host, probe_port), timeout=3):
+            return True
+    except OSError:
+        return False
+
+
+def wait_for_network_ready(
+    probe_host: str = "1.1.1.1",
+    probe_port: int = 443,
+    dns_probe_hosts: list[str] | None = None,
+    max_wait: float = 120.0,
+    interval: float = 2.0,
+    logger=None,
+    sleep=time.sleep,
+    monotonic=time.monotonic,
+) -> bool:
+    """Block until the machine has real connectivity, bounded by ``max_wait``.
+
+    At Windows logon the autostart entry runs before DHCP/DNS are ready. Enabling
+    the system proxy in that window forces every connection through the local
+    engine while it still cannot reach upstream, leaving the machine with no
+    internet until the user restarts the app. Gate proxy activation on this check.
+
+    Probes use raw sockets, so they are unaffected by any current system proxy.
+    Returns True once connectivity is confirmed, or False if ``max_wait`` elapses.
+    """
+    if not (probe_host or "").strip():
+        probe_host = "1.1.1.1"
+    dns_probe_hosts = dns_probe_hosts or ["microsoft.com", "example.com"]
+    deadline = monotonic() + max_wait
+    attempts = 0
+    while True:
+        attempts += 1
+        if _dns_and_route_ready(probe_host, probe_port, dns_probe_hosts):
+            if logger and attempts > 1:
+                logger.info(f"[STARTUP] Network ready after {attempts} probe(s)")
+            return True
+        if monotonic() >= deadline:
+            if logger:
+                logger.warning(
+                    f"[STARTUP] Network not confirmed within {int(max_wait)}s; enabling proxy anyway"
+                )
+            return False
+        sleep(interval)
+
+
+class SessionEndWatcher:
+    """Restore the user's system proxy when Windows logs off / restarts / shuts down.
+
+    Why this exists
+    ---------------
+    While running, CleanNet points the *Windows system proxy* at its local engine
+    (127.0.0.1:<port>). On a normal Exit we put the user's original proxy settings
+    back. But when Windows shuts down or restarts *without* the user clicking Exit,
+    a windowed app's ``atexit``/signal handlers do not run reliably, so that proxy
+    entry would be left behind. If autostart is disabled, the next boot has nothing
+    listening on that port and every proxy-aware app (browsers, etc.) loses internet
+    until CleanNet is opened again. This watcher closes that gap.
+
+    How it works
+    ------------
+    Windows notifies *top-level* windows of an impending session end via
+    ``WM_QUERYENDSESSION`` / ``WM_ENDSESSION``. We create a single hidden top-level
+    window on a dedicated daemon thread purely to receive that notification, then run
+    the exact same proxy restore we do on Exit. We never block or delay shutdown: we
+    answer ``WM_QUERYENDSESSION`` with TRUE immediately and only restore a couple of
+    HKCU registry values on the definitive ``WM_ENDSESSION``.
+
+    Transparency / scope (what this does and does NOT do)
+    -----------------------------------------------------
+    * It only RESTORES the user's own previous proxy settings - i.e. it removes
+      CleanNet's footprint. It never enables anything or adds persistence.
+    * No autostart entry, no scheduled task, no network listener, no elevation.
+    * The hidden window handles only the session-end messages above; everything else
+      is passed to ``DefWindowProcW``. It cannot do anything a co-process at the same
+      integrity level could not already do directly to the user's HKCU registry.
+    """
+
+    def __init__(self, on_session_end, logger=None, class_name: str = "CleanNetSessionEndWatcher"):
+        self._on_session_end = on_session_end
+        self._logger = logger
+        self._class_name = class_name
+        self._thread: threading.Thread | None = None
+        self._hwnd = None
+        self._wndproc = None  # keep the ctypes callback alive for the window's lifetime
+        self._fired = False
+        self._fire_lock = threading.Lock()
+
+    def start(self) -> bool:
+        if ctypes is None or self._thread is not None:
+            return False
+        self._thread = threading.Thread(
+            target=self._run, name="cleannet-session-watcher", daemon=True
+        )
+        self._thread.start()
+        return True
+
+    def stop(self) -> None:
+        if ctypes is None or self._hwnd is None:
+            return
+        try:
+            ctypes.windll.user32.PostMessageW(self._hwnd, WM_CLOSE, 0, 0)
+        except Exception:
+            pass
+
+    def _fire(self) -> None:
+        with self._fire_lock:
+            if self._fired:
+                return
+            self._fired = True
+        try:
+            self._on_session_end()
+        except Exception as exc:
+            if self._logger:
+                self._logger.error(f"[SHUTDOWN] Proxy restore on session end failed: {exc}")
+
+    def _run(self) -> None:
+        try:
+            self._message_loop()
+        except Exception as exc:
+            if self._logger:
+                self._logger.debug(f"Session-end watcher stopped: {exc}")
+
+    def _message_loop(self) -> None:
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        kernel32 = ctypes.windll.kernel32
+
+        WNDPROC = ctypes.WINFUNCTYPE(
+            ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
+        )
+
+        class WNDCLASS(ctypes.Structure):
+            _fields_ = [
+                ("style", wintypes.UINT),
+                ("lpfnWndProc", WNDPROC),
+                ("cbClsExtra", ctypes.c_int),
+                ("cbWndExtra", ctypes.c_int),
+                ("hInstance", wintypes.HINSTANCE),
+                ("hIcon", wintypes.HICON),
+                ("hCursor", wintypes.HANDLE),
+                ("hbrBackground", wintypes.HBRUSH),
+                ("lpszMenuName", wintypes.LPCWSTR),
+                ("lpszClassName", wintypes.LPCWSTR),
+            ]
+
+        def wndproc(hwnd, msg, wparam, lparam):
+            try:
+                if msg == WM_QUERYENDSESSION:
+                    return 1  # always agree; never block or delay the user's shutdown
+                if msg == WM_ENDSESSION:
+                    if wparam:  # wParam is TRUE only when the session is really ending
+                        self._fire()
+                    return 0
+                if msg == WM_DESTROY:
+                    user32.PostQuitMessage(0)
+                    return 0
+            except Exception:
+                pass
+            return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+        self._wndproc = WNDPROC(wndproc)
+
+        # Set explicit restypes/argtypes so HWND/HMODULE pointers are not truncated on 64-bit.
+        kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+        kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+        user32.DefWindowProcW.restype = ctypes.c_ssize_t
+        user32.DefWindowProcW.argtypes = [
+            wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
+        ]
+        user32.RegisterClassW.restype = wintypes.ATOM
+        user32.RegisterClassW.argtypes = [ctypes.POINTER(WNDCLASS)]
+        user32.CreateWindowExW.restype = wintypes.HWND
+        user32.CreateWindowExW.argtypes = [
+            wintypes.DWORD, wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD,
+            ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int,
+            wintypes.HWND, wintypes.HMENU, wintypes.HINSTANCE, wintypes.LPVOID,
+        ]
+        user32.GetMessageW.argtypes = [
+            ctypes.POINTER(wintypes.MSG), wintypes.HWND, wintypes.UINT, wintypes.UINT
+        ]
+
+        hinst = kernel32.GetModuleHandleW(None)
+        wndclass = WNDCLASS()
+        wndclass.lpfnWndProc = self._wndproc
+        wndclass.hInstance = hinst
+        wndclass.lpszClassName = self._class_name
+        user32.RegisterClassW(ctypes.byref(wndclass))  # ignore "already registered" on re-entry
+
+        # A normal (never-shown) top-level window; message-only windows do NOT receive
+        # the session-end broadcast, so we deliberately avoid HWND_MESSAGE here.
+        hwnd = user32.CreateWindowExW(
+            0, self._class_name, "CleanNet", 0, 0, 0, 0, 0, None, None, hinst, None
+        )
+        if not hwnd:
+            if self._logger:
+                self._logger.debug("Session-end watcher window could not be created")
+            return
+        self._hwnd = hwnd
+
+        msg = wintypes.MSG()
+        while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+            user32.TranslateMessage(ctypes.byref(msg))
+            user32.DispatchMessageW(ctypes.byref(msg))
 
 
 def get_autostart(reg_name: str) -> bool:

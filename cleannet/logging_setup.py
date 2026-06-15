@@ -86,6 +86,8 @@ def setup_logging(
     no_disk_log = env.get("DPI_BYPASS_NO_DISK_LOG") == "1"
     log_real_hosts = env.get("DPI_BYPASS_LOG_HOSTS") == "1"
 
+    os.makedirs(app_dir, exist_ok=True)
+
     logger = logging.getLogger(logger_name)
     logger.setLevel(logging.DEBUG)
     if reset_handlers:
