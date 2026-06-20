@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.2 - 2026-06-19
+
+- Fixed the same privacy-mode passthrough regression as the Windows build: plain-HTTP passthrough is no longer DoH-resolved or blocked, so applications that route local/vendor HTTP through the proxy connect normally while privacy mode is on. Privacy/DoH still applies to configured bypass sites only.
+
 ## 2.1.1 - 2026-06-15
 
 - Version aligned with the unified Windows/Linux release.

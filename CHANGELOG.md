@@ -1,5 +1,9 @@
 ﻿# Changelog
 
+## 2.1.2 - 2026-06-19
+
+- Fixed a connectivity regression in privacy (DoH) mode. Plain-HTTP passthrough traffic was being DNS-resolved over DoH and blocked when resolution failed, so applications whose HTTP client ignores the Windows system-proxy bypass list (for example the Epic Games and Xbox launchers, which contact local/loopback and vendor endpoints) could not connect and reported their services as unavailable while CleanNet was running with privacy mode on. Privacy/DoH now applies only to configured bypass sites; all passthrough traffic uses the system resolver and is never blocked. There is no privacy change for configured sites.
+
 ## 2.1.1 - 2026-06-15
 
 - Fixed a startup issue where enabling autostart could leave the machine without internet after a reboot. CleanNet took over the Windows system proxy before the network stack (DHCP/DNS) was ready, routing all traffic through the local engine while it could not yet reach upstream, so connections were blackholed until CleanNet was manually restarted. CleanNet now waits for confirmed connectivity (DNS resolution plus a live TCP connection to a public endpoint, up to 120 seconds) before activating the system proxy at startup.

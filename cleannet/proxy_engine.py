@@ -248,7 +248,14 @@ class ProxyEngine:
             )
             self.ctx.logger.info(f"[HTTP-FORWARD] {target.method} {target.host}:{target.port}{target.path[:60]}")
 
-            server_reader, server_writer = await self.try_connect(target.host, target.port, timeout=15)
+            # Plain HTTP forward is always passthrough (configured bypass sites use HTTPS via
+            # CONNECT). Resolve with system DNS and never block here: privacy/DoH applies only to
+            # configured sites. Without this, apps whose HTTP client ignores the Windows proxy
+            # bypass list (e.g. Epic Games / Xbox launchers reaching localhost or vendor hosts)
+            # are blackholed whenever DoH resolution fails while privacy mode is on.
+            server_reader, server_writer = await self.try_connect(
+                target.host, target.port, timeout=15, use_privacy_dns=False
+            )
             if not server_writer:
                 return
 
