@@ -202,6 +202,37 @@ class ProxyEngineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(privacy_events[0][1]["sni_status"], "direct")
         self.assertEqual(privacy_events[0][1]["sni_detail"], "passthrough tunnel")
 
+    async def test_http_forward_never_uses_privacy_dns_or_blocks(self):
+        # Regression: plain HTTP forward must connect via system DNS and never DoH-block,
+        # even with privacy mode on. Apps whose HTTP client ignores the proxy bypass list
+        # (e.g. launchers reaching localhost) were blackholed when DoH failed.
+        calls = []
+        private_resolutions = []
+
+        async def open_connection(host, port):
+            calls.append((host, port))
+            return _Reader(), _Writer()
+
+        async def resolve_private(host):
+            private_resolutions.append(host)
+            return []  # DoH "fails" - would block if privacy DNS were applied here
+
+        context = self._context(
+            open_connection=open_connection,
+            resolve_private=resolve_private,
+            privacy={"hide_dns": True, "hide_sni": True},
+        )
+        engine = ProxyEngine(context)
+
+        await engine.handle_http_forward(
+            b"GET http://localhost:35783/api/v1/installation/operations HTTP/1.1\r\nHost: localhost:35783\r\n\r\n",
+            _Reader(),
+            _Writer(),
+        )
+
+        self.assertEqual(calls, [("localhost", 35783)])  # connected directly
+        self.assertEqual(private_resolutions, [])  # DoH never consulted -> never blocked
+
 
 if __name__ == "__main__":
     unittest.main()
