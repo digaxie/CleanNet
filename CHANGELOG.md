@@ -1,5 +1,11 @@
 ﻿# Changelog
 
+## 2.1.3 - 2026-06-20
+
+- Reworked the built-in "Fix Xbox / Store Apps" tool so it reliably restores Microsoft Store / UWP apps (for example the Xbox app and Game Pass) that show blank pages or fail to load while the proxy is on. Windows isolates Store/UWP apps from local network services, so they could not reach CleanNet's local proxy. The tool now grants a per-app loopback exemption for the apps that need it (Xbox, Game Pass, Store, Xbox sign-in, and any installed Xbox/Gaming/Store package) instead of relying only on the generic exemption that Windows frequently ignores.
+- The fix now runs in a visible, elevated console that lists exactly which packages it updates, and the dashboard shows a confirmation first explaining that it requires Administrator (UAC), what it changes, and that it is reversible.
+- Made the tool easier to find: it is now its own clearly labeled card in Settings instead of a small button under Config Management.
+
 ## 2.1.2 - 2026-06-19
 
 - Fixed a connectivity regression in privacy (DoH) mode. Plain-HTTP passthrough traffic was being DNS-resolved over DoH and blocked when resolution failed, so applications whose HTTP client ignores the Windows system-proxy bypass list (for example the Epic Games and Xbox launchers, which contact local/loopback and vendor endpoints) could not connect and reported their services as unavailable while CleanNet was running with privacy mode on. Privacy/DoH now applies only to configured bypass sites; all passthrough traffic uses the system resolver and is never blocked. There is no privacy change for configured sites.

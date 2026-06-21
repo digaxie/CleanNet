@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.3 - 2026-06-20
+
+- Version aligned with the Windows 2.1.3 release. This release only changes the Windows Microsoft Store / UWP loopback fix; there are no Linux-side functional changes.
+
 ## 2.1.2 - 2026-06-19
 
 - Fixed the same privacy-mode passthrough regression as the Windows build: plain-HTTP passthrough is no longer DoH-resolved or blocked, so applications that route local/vendor HTTP through the proxy connect normally while privacy mode is on. Privacy/DoH still applies to configured bypass sites only.

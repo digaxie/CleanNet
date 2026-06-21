@@ -830,10 +830,46 @@ class DashboardServer:
 
             elif path == "/api/fix-uwp" and method == "POST":
                 try:
-                    bat_path = os.path.join(tempfile.gettempdir(), "cleannet_uwp_fix.bat")
-                    with open(bat_path, "w", encoding="utf-8") as f:
-                        f.write("@echo off\r\nCheckNetIsolation LoopbackExempt -a -p=S-1-15-2-1 >nul 2>&1\r\n")
-                    ctypes.windll.shell32.ShellExecuteW(None, "runas", bat_path, None, None, 1)
+                    # Grant a Windows "loopback exemption" so Microsoft Store / UWP apps
+                    # (Xbox, Game Pass, Store, sign-in) can reach the local proxy at 127.0.0.1.
+                    # UWP AppContainer isolation blocks loopback by default; the generic
+                    # ALL_APP_PACKAGES (S-1-15-2-1) exemption is unreliable, so we add a
+                    # per-package exemption for the apps that actually need it. Reversible;
+                    # runs elevated in a visible console so the user can see exactly what happens.
+                    ps_lines = [
+                        "$ErrorActionPreference='SilentlyContinue'",
+                        "Write-Host 'CleanNet - Xbox / Microsoft Store loopback fix' -ForegroundColor Cyan",
+                        "Write-Host 'Allowing Store/UWP apps to reach the local proxy (127.0.0.1)...'",
+                        "Write-Host ''",
+                        (
+                            "$known=@('Microsoft.GamingApp_8wekyb3d8bbwe',"
+                            "'Microsoft.GamingServices_8wekyb3d8bbwe',"
+                            "'Microsoft.Xbox.TCUI_8wekyb3d8bbwe',"
+                            "'Microsoft.XboxIdentityProvider_8wekyb3d8bbwe',"
+                            "'Microsoft.XboxGamingOverlay_8wekyb3d8bbwe',"
+                            "'Microsoft.XboxSpeechToTextOverlay_8wekyb3d8bbwe',"
+                            "'Microsoft.WindowsStore_8wekyb3d8bbwe',"
+                            "'Microsoft.StorePurchaseApp_8wekyb3d8bbwe')"
+                        ),
+                        "foreach($p in $known){ CheckNetIsolation LoopbackExempt -a -n=$p | Out-Null; Write-Host ('  + ' + $p) }",
+                        "Get-AppxPackage | Where-Object { $_.PackageFamilyName -match 'Xbox|Gaming|WindowsStore|StorePurchase|Communications' } | ForEach-Object { CheckNetIsolation LoopbackExempt -a -n=$_.PackageFamilyName | Out-Null; Write-Host ('  + ' + $_.PackageFamilyName) }",
+                        "CheckNetIsolation LoopbackExempt -a -p=S-1-15-2-1 | Out-Null",
+                        "Write-Host ''",
+                        "Write-Host 'Done. Now fully close and reopen the affected app (e.g. Xbox).' -ForegroundColor Green",
+                        "Write-Host 'To review these exemptions later (as admin): CheckNetIsolation LoopbackExempt -s' -ForegroundColor DarkGray",
+                        "Read-Host 'Press Enter to close'",
+                    ]
+                    ps_path = os.path.join(tempfile.gettempdir(), "cleannet_uwp_fix.ps1")
+                    with open(ps_path, "w", encoding="utf-8") as f:
+                        f.write("\r\n".join(ps_lines) + "\r\n")
+                    ctypes.windll.shell32.ShellExecuteW(
+                        None,
+                        "runas",
+                        "powershell.exe",
+                        f'-NoProfile -ExecutionPolicy Bypass -File "{ps_path}"',
+                        None,
+                        1,
+                    )
                     self.ctx.logger.info("[UWP] Loopback exemption requested (admin prompt)")
                     await self._send_ok(writer)
                 except Exception as e:
