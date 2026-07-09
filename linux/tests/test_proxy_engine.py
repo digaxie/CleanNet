@@ -1,6 +1,12 @@
 import unittest
+from unittest import mock
 
-from cleannet.proxy_engine import ProxyEngine, ProxyRuntimeContext
+from cleannet.proxy_engine import (
+    HAPPY_EYEBALLS_DELAY,
+    ProxyEngine,
+    ProxyRuntimeContext,
+    open_connection_dual_stack,
+)
 from cleannet.runtime import ConnectionTracker
 
 
@@ -232,6 +238,28 @@ class ProxyEngineTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(calls, [("localhost", 35783)])  # connected directly
         self.assertEqual(private_resolutions, [])  # DoH never consulted -> never blocked
+
+    async def test_default_connector_enables_happy_eyeballs(self):
+        # Regression: on machines that advertise IPv6 but cannot route it, hostname
+        # connects hung on the AAAA address until try_connect's 10s timeout fired
+        # before IPv4 was ever tried (YouTube/Kick "connection failed" while
+        # IPv4-only hosts worked). The default connector must stagger v6/v4.
+        captured = {}
+
+        async def fake_open_connection(host, port, **kwargs):
+            captured["args"] = (host, port)
+            captured["kwargs"] = kwargs
+            return _Reader(), _Writer()
+
+        with mock.patch("asyncio.open_connection", fake_open_connection):
+            await open_connection_dual_stack("example.com", 443)
+
+        self.assertEqual(captured["args"], ("example.com", 443))
+        self.assertEqual(captured["kwargs"], {"happy_eyeballs_delay": HAPPY_EYEBALLS_DELAY})
+        self.assertIs(
+            ProxyRuntimeContext.__dataclass_fields__["open_connection"].default,
+            open_connection_dual_stack,
+        )
 
 
 if __name__ == "__main__":

@@ -21,6 +21,16 @@ from .proxy import (
 Reader = Any
 Writer = Any
 
+# Stagger IPv6/IPv4 attempts (RFC 8305 Happy Eyeballs). Without this, a host that
+# advertises IPv6 but cannot route it (common on half-configured ISP modems) makes
+# every hostname connect hang on the AAAA address until try_connect's outer timeout
+# kills it before IPv4 is ever tried.
+HAPPY_EYEBALLS_DELAY = 0.25
+
+
+async def open_connection_dual_stack(host, port):
+    return await asyncio.open_connection(host, port, happy_eyeballs_delay=HAPPY_EYEBALLS_DELAY)
+
 
 @dataclass
 class ProxyRuntimeContext:
@@ -52,7 +62,7 @@ class ProxyRuntimeContext:
     strategy_success_timeout: float
     blocked_domain_ttl: int
     site_max_concurrent: int
-    open_connection: Callable[..., Awaitable[tuple[Reader, Writer]]] = asyncio.open_connection
+    open_connection: Callable[..., Awaitable[tuple[Reader, Writer]]] = open_connection_dual_stack
 
 
 def close_writer(writer: Writer | None) -> None:

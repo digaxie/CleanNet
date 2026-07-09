@@ -4,7 +4,7 @@ CleanNet is a local, Windows-focused DPI bypass tool for people who want a trans
 
 Languages: [English](#english) | [Türkçe](#türkçe) | [Deutsch](#deutsch)
 
-Current version: `v2.1.3`
+Current version: `v2.1.4`
 
 Public default site list: Discord only. No personal/custom site list is included in this public package.
 
@@ -47,7 +47,7 @@ Use the method that matches your trust preference.
 
 | Option | Best for | What you run |
 |---|---|---|
-| Setup installer | Recommended for normal users | `CleanNet-2.1.3-setup.exe` |
+| Setup installer | Recommended for normal users | `CleanNet-2.1.4-setup.exe` |
 | Standalone EXE | Portable/no-install use | `CleanNet.exe` from GitHub Releases |
 | Portable source ZIP | Users who want readable files | `CleanNet_Launcher.bat` |
 | Manual Python | Developers and auditors | `pythonw bypass_silent.pyw` |
@@ -55,7 +55,7 @@ Use the method that matches your trust preference.
 #### Option 1: Setup Installer
 
 1. Open the GitHub Releases page.
-2. Download `CleanNet-2.1.3-setup.exe`.
+2. Download `CleanNet-2.1.4-setup.exe`.
 3. Run the installer.
 4. Read the setup information screen before continuing.
 5. Choose whether to create a desktop shortcut.
@@ -85,7 +85,7 @@ Windows SmartScreen may warn about unsigned open-source executables. That warnin
 
 #### Option 3: Portable Source ZIP
 
-1. Download `CleanNet-2.1.3-portable.zip` from GitHub Releases.
+1. Download `CleanNet-2.1.4-portable.zip` from GitHub Releases.
 2. Extract it to a normal folder, for example `C:\Tools\CleanNet`.
 3. Run:
 
@@ -114,8 +114,8 @@ For release files, compare SHA-256 hashes:
 
 ```powershell
 Get-FileHash .\CleanNet.exe -Algorithm SHA256
-Get-FileHash .\CleanNet-2.1.3-portable.zip -Algorithm SHA256
-Get-FileHash .\CleanNet-2.1.3-setup.exe -Algorithm SHA256
+Get-FileHash .\CleanNet-2.1.4-portable.zip -Algorithm SHA256
+Get-FileHash .\CleanNet-2.1.4-setup.exe -Algorithm SHA256
 ```
 
 Compare the output with the `SHA256SUMS.txt` file attached to the release.
@@ -317,7 +317,7 @@ Güven tercihinize göre dört yol var.
 
 | Seçenek | Kimler için | Çalıştırılacak dosya |
 |---|---|---|
-| Klasik setup installer | Normal kullanıcılar için önerilir | `CleanNet-2.1.3-setup.exe` |
+| Klasik setup installer | Normal kullanıcılar için önerilir | `CleanNet-2.1.4-setup.exe` |
 | Standalone EXE | Kurulumsuz/taşınabilir kullanım | GitHub Releases içindeki `CleanNet.exe` |
 | Portable kaynak ZIP | Dosyaları görmek isteyen kullanıcı | `CleanNet_Launcher.bat` |
 | Manuel Python | Geliştirici ve denetleyen kullanıcı | `pythonw bypass_silent.pyw` |
@@ -325,7 +325,7 @@ Güven tercihinize göre dört yol var.
 #### Seçenek 1: Klasik Setup Installer
 
 1. GitHub Releases sayfasını açın.
-2. `CleanNet-2.1.3-setup.exe` dosyasını indirin.
+2. `CleanNet-2.1.4-setup.exe` dosyasını indirin.
 3. Installer'ı çalıştırın.
 4. Devam etmeden önce kurulum bilgilendirme ekranını okuyun.
 5. Masaüstü kısayolu isteyip istemediğinizi seçin.
@@ -355,7 +355,7 @@ Windows SmartScreen imzasız açık kaynak EXE dosyaları için uyarı göstereb
 
 #### Seçenek 3: Portable Kaynak ZIP
 
-1. GitHub Releases içinden `CleanNet-2.1.3-portable.zip` dosyasını indirin.
+1. GitHub Releases içinden `CleanNet-2.1.4-portable.zip` dosyasını indirin.
 2. Normal bir klasöre çıkarın, örnek: `C:\Tools\CleanNet`.
 3. Çalıştırın:
 
@@ -384,8 +384,8 @@ Release dosyaları için SHA-256 kontrolü yapın:
 
 ```powershell
 Get-FileHash .\CleanNet.exe -Algorithm SHA256
-Get-FileHash .\CleanNet-2.1.3-portable.zip -Algorithm SHA256
-Get-FileHash .\CleanNet-2.1.3-setup.exe -Algorithm SHA256
+Get-FileHash .\CleanNet-2.1.4-portable.zip -Algorithm SHA256
+Get-FileHash .\CleanNet-2.1.4-setup.exe -Algorithm SHA256
 ```
 
 Çıktıyı release ekindeki `SHA256SUMS.txt` ile karşılaştırın.
@@ -585,7 +585,7 @@ Wählen Sie den Weg, dem Sie vertrauen.
 
 | Option | Geeignet für | Ausführen |
 |---|---|---|
-| Setup Installer | Empfohlen für normale Nutzer | `CleanNet-2.1.3-setup.exe` |
+| Setup Installer | Empfohlen für normale Nutzer | `CleanNet-2.1.4-setup.exe` |
 | Standalone EXE | Portable Nutzung ohne Installation | `CleanNet.exe` aus GitHub Releases |
 | Portable Source ZIP | Nutzer, die Dateien prüfen möchten | `CleanNet_Launcher.bat` |
 | Manuelles Python | Entwickler und Auditoren | `pythonw bypass_silent.pyw` |
@@ -593,7 +593,7 @@ Wählen Sie den Weg, dem Sie vertrauen.
 #### Option 1: Setup Installer
 
 1. Öffnen Sie die GitHub Releases Seite.
-2. Laden Sie `CleanNet-2.1.3-setup.exe` herunter.
+2. Laden Sie `CleanNet-2.1.4-setup.exe` herunter.
 3. Starten Sie den Installer.
 4. Lesen Sie die Setup-Informationen, bevor Sie fortfahren.
 5. Wählen Sie optional eine Desktop-Verknüpfung.
@@ -623,7 +623,7 @@ Windows SmartScreen kann bei unsignierten Open-Source-EXE-Dateien warnen. Diese 
 
 #### Option 3: Portable Source ZIP
 
-1. Laden Sie `CleanNet-2.1.3-portable.zip` aus GitHub Releases herunter.
+1. Laden Sie `CleanNet-2.1.4-portable.zip` aus GitHub Releases herunter.
 2. Entpacken Sie es in einen normalen Ordner, zum Beispiel `C:\Tools\CleanNet`.
 3. Starten Sie:
 
@@ -652,8 +652,8 @@ Prüfen Sie SHA-256 Hashes:
 
 ```powershell
 Get-FileHash .\CleanNet.exe -Algorithm SHA256
-Get-FileHash .\CleanNet-2.1.3-portable.zip -Algorithm SHA256
-Get-FileHash .\CleanNet-2.1.3-setup.exe -Algorithm SHA256
+Get-FileHash .\CleanNet-2.1.4-portable.zip -Algorithm SHA256
+Get-FileHash .\CleanNet-2.1.4-setup.exe -Algorithm SHA256
 ```
 
 Vergleichen Sie die Ausgabe mit `SHA256SUMS.txt` im Release.
