@@ -24,8 +24,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_release.ps1
 
 Output:
 
-- `dist\CleanNet-2.1.3\`
-- `dist\CleanNet-2.1.3-portable.zip`
+- `dist\CleanNet-2.1.4\`
+- `dist\CleanNet-2.1.4-portable.zip`
 
 ## Build EXE
 
@@ -54,7 +54,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\build_installer.ps
 
 Output:
 
-- `dist\CleanNet-2.1.3-setup.exe`
+- `dist\CleanNet-2.1.4-setup.exe`
 
 The installer is per-user by default:
 
@@ -91,20 +91,20 @@ Output:
 
 Upload these files to GitHub Releases:
 
-- `dist\CleanNet-2.1.3-setup.exe`
+- `dist\CleanNet-2.1.4-setup.exe`
 - `dist\CleanNet.exe`
-- `dist\CleanNet-2.1.3-portable.zip`
+- `dist\CleanNet-2.1.4-portable.zip`
 - `dist\SHA256SUMS.txt`
 
 ## Suggested GitHub Release Text
 
 ```text
-CleanNet v2.1.3
+CleanNet v2.1.4
 
 Install options:
-1. CleanNet-2.1.3-setup.exe - recommended classic installer with setup explanation.
+1. CleanNet-2.1.4-setup.exe - recommended classic installer with setup explanation.
 2. CleanNet.exe - standalone no-install executable.
-3. CleanNet-2.1.3-portable.zip - readable source/BAT path for users who do not trust EXE files.
+3. CleanNet-2.1.4-portable.zip - readable source/BAT path for users who do not trust EXE files.
 
 Default public configuration includes Discord only.
 

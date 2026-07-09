@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.4 - 2026-07-09
+
+- Fixed the same passthrough connectivity bug as the Windows build: on networks that advertise IPv6 but cannot route it, hostname connections to dual-stack sites (for example YouTube and Kick) hung on the dead IPv6 address until the 10-second connect timeout expired. Upstream connections now use Happy Eyeballs (RFC 8305), racing IPv6 and IPv4 with a 250 ms stagger. Networks with working IPv6 and IPv4-only sites are unaffected.
+
 ## 2.1.3 - 2026-06-20
 
 - Version aligned with the Windows 2.1.3 release. This release only changes the Windows Microsoft Store / UWP loopback fix; there are no Linux-side functional changes.

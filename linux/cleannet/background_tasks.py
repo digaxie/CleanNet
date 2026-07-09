@@ -10,6 +10,8 @@ import ssl
 import time
 from typing import Any, Awaitable, Callable
 
+from .proxy_engine import open_connection_dual_stack
+
 
 Reader = Any
 Writer = Any
@@ -60,7 +62,7 @@ class BackgroundTaskContext:
     parse_iso: Callable[[str | None], float | None]
     now_iso: Callable[[], str]
     should_manage_proxy: Callable[[], bool] = lambda: True
-    open_connection: Callable[..., Awaitable[tuple[Reader, Writer]]] = asyncio.open_connection
+    open_connection: Callable[..., Awaitable[tuple[Reader, Writer]]] = open_connection_dual_stack
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
     perf_counter: Callable[[], float] = time.perf_counter
     time_func: Callable[[], float] = time.time

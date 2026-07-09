@@ -1,5 +1,10 @@
 ﻿# Changelog
 
+## 2.1.4 - 2026-07-09
+
+- Fixed non-configured (passthrough) sites such as YouTube and Kick failing with "connection timed out" errors on networks that advertise IPv6 but cannot actually route it — a common state on half-configured ISP modems. CleanNet connected to such hosts by hostname, the operating system offered the IPv6 address first, and the connection hung on the dead IPv6 route until CleanNet's 10-second connect timeout expired, so the IPv4 address was never tried. Browsers hide this network condition with their own Happy Eyeballs logic, which is why the same sites opened fine without the proxy. Upstream connections now use Happy Eyeballs (RFC 8305): IPv6 and IPv4 are attempted with a 250 ms stagger and the first one to connect wins. Sites that only publish IPv4 addresses were never affected, and nothing changes on networks with working IPv6.
+- The dashboard ping monitor uses the same dual-stack connect, so a hostname ping target no longer shows -1 on such networks.
+
 ## 2.1.3 - 2026-06-20
 
 - Reworked the built-in "Fix Xbox / Store Apps" tool so it reliably restores Microsoft Store / UWP apps (for example the Xbox app and Game Pass) that show blank pages or fail to load while the proxy is on. Windows isolates Store/UWP apps from local network services, so they could not reach CleanNet's local proxy. The tool now grants a per-app loopback exemption for the apps that need it (Xbox, Game Pass, Store, Xbox sign-in, and any installed Xbox/Gaming/Store package) instead of relying only on the generic exemption that Windows frequently ignores.
