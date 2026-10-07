@@ -20,7 +20,6 @@ try {
     $files = @(
         "bypass_silent.pyw",
         "CleanNet_Launcher.bat",
-        "CleanTraces.ps1",
         "requirements.txt",
         "config.json",
         "README.md",
