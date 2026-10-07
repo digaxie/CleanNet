@@ -104,6 +104,10 @@ function Assert-ZipContents {
             throw "Bytecode/cache entries in ZIP: $($bad -join ', ')"
         }
 
+        if ($entries -contains "CleanTraces.ps1") {
+            throw "Portable ZIP must not include the removed browser/Windows trace cleaner"
+        }
+
         $launcher = ($zip.Entries | Where-Object { ($_.FullName -replace "\\", "/") -eq "bypass_silent.pyw" })
         $reader = New-Object System.IO.StreamReader($launcher.Open())
         try {
