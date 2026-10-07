@@ -268,7 +268,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_release.ps1
 | Site does not open | Run site test from dashboard, wait for strategy discovery, check logs. |
 | Discord still does not route | Confirm Windows proxy is owned by CleanNet in Overview/Diagnostics. |
 | Games lag | Add the game endpoint or process endpoints to proxy exceptions. |
-| Internet breaks after force-closing | Run `CleanTraces.ps1` or disable Windows proxy manually. |
+| Internet breaks after force-closing | Restart CleanNet and exit normally to restore its proxy backup. If it cannot start, open Windows Settings → Network & Internet → Proxy and disable the manual proxy only if it points to CleanNet (`127.0.0.1:8080`, or your configured port). |
 | EXE is not trusted | Read the setup installer explanation, use the portable ZIP, or clone the source and run `CleanNet_Launcher.bat`. |
 | Xbox / Microsoft Store apps show blank pages or will not sign in | Windows isolates Store/UWP apps from local services, so they cannot reach CleanNet's proxy. In the dashboard open **Settings → Fix Xbox / Store Apps**, accept the Administrator (UAC) prompt, then fully close and reopen the app. This is a built-in, reversible Windows setting. |
 
@@ -478,7 +478,7 @@ CleanNet yalnızca şu registry alanındaki kullanıcı bazlı Windows proxy aya
 HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings
 ```
 
-Önceki proxy durumu `proxy_state.json` içinde saklanır ve çıkışta — Exit'e basmadan Windows oturumunu kapatsanız, yeniden başlatsanız veya bilgisayarı kapatsanız bile — geri yüklenir. Böylece autostart'ı kapalı tutup CleanNet'i sadece ihtiyaç duyduğunuzda açsanız dahi, yeniden başlatma sistem proxy'sini durmuş yerel motora bağlı bırakmaz. Uygulama kapanmadan zorla öldürülürse Windows proxy ayarını manuel kapatabilir veya `CleanTraces.ps1` kullanabilirsiniz.
+Önceki proxy durumu `proxy_state.json` içinde saklanır ve çıkışta — Exit'e basmadan Windows oturumunu kapatsanız, yeniden başlatsanız veya bilgisayarı kapatsanız bile — geri yüklenir. Böylece autostart'ı kapalı tutup CleanNet'i sadece ihtiyaç duyduğunuzda açsanız dahi, yeniden başlatma sistem proxy'sini durmuş yerel motora bağlı bırakmaz. Uygulama zorla kapatılırsa yeniden başlatıp normal çıkış yapın. Başlatılamıyorsa Windows Ayarları → Ağ ve İnternet → Proxy bölümünde yalnız CleanNet'e ait manuel proxy'yi kapatın (`127.0.0.1:8080` veya ayarladığınız port).
 
 ### Gizlilik
 
@@ -538,7 +538,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\verify_release.ps1
 | Site açılmıyor | Dashboarddan site testi çalıştırın, strateji keşfini bekleyin, loglara bakın. |
 | Discord hâlâ route olmuyor | Overview/Diagnostics içinde Windows proxy'nin CleanNet'e ait olduğunu doğrulayın. |
 | Oyunlarda ping artıyor | Oyunun endpointlerini veya process endpointlerini proxy exception listesine ekleyin. |
-| İnternet zorla kapatma sonrası bozuldu | `CleanTraces.ps1` çalıştırın veya Windows proxy ayarını manuel kapatın. |
+| İnternet zorla kapatma sonrası bozuldu | CleanNet'i yeniden başlatıp normal çıkış yapın. Başlatılamıyorsa Windows Ayarları → Ağ ve İnternet → Proxy bölümünde yalnız CleanNet'e ait manuel proxy'yi kapatın (`127.0.0.1:8080` veya ayarladığınız port). |
 | EXE'ye güvenmiyorsunuz | Setup installer açıklamalarını okuyun veya portable ZIP / kaynak kod yolunu kullanın. |
 | Xbox / Microsoft Store uygulamaları boş açılıyor veya giriş yapılamıyor | Windows, Store/UWP uygulamalarını yerel servislerden yalıtır; bu yüzden CleanNet proxy'sine ulaşamazlar. Dashboard'da **Ayarlar → Xbox / Store Uygulamalarını Düzelt**'i açın, Yönetici (UAC) iznini onaylayın, ardından uygulamayı tamamen kapatıp yeniden açın. Bu, Windows'un yerleşik ve geri alınabilir bir ayarıdır. |
 
@@ -780,7 +780,7 @@ Der Installer-Build benötigt Inno Setup 6.
 | Website öffnet nicht | Website-Test im Dashboard starten, Strategie-Erkennung abwarten, Logs prüfen. |
 | Discord routet nicht | In Overview/Diagnostics prüfen, ob Windows Proxy CleanNet gehört. |
 | Spiele haben hohe Latenz | Spiel-Endpoint oder Prozess-Endpoints zu Proxy Exceptions hinzufügen. |
-| Internet nach Force-Close defekt | `CleanTraces.ps1` ausführen oder Windows Proxy manuell deaktivieren. |
+| Internet nach Force-Close defekt | CleanNet neu starten und regulär beenden, um das Proxy-Backup wiederherzustellen. Wenn es nicht startet: Windows-Einstellungen → Netzwerk und Internet → Proxy öffnen und den manuellen Proxy nur deaktivieren, wenn er auf CleanNet zeigt (`127.0.0.1:8080` oder Ihr konfigurierter Port). |
 | EXE nicht vertrauenswürdig | Setup-Erklärung lesen oder Portable ZIP / Quellcode + `CleanNet_Launcher.bat` verwenden. |
 | Xbox / Microsoft Store-Apps bleiben leer oder Anmeldung schlägt fehl | Windows isoliert Store/UWP-Apps von lokalen Diensten, sodass sie den CleanNet-Proxy nicht erreichen. Im Dashboard **Einstellungen → Xbox / Store-Apps reparieren** öffnen, die Administrator-Abfrage (UAC) bestätigen und die App anschließend vollständig schließen und neu öffnen. Dies ist eine integrierte, umkehrbare Windows-Einstellung. |
 
@@ -796,3 +796,24 @@ Verwenden Sie CleanNet nur dort, wo dies erlaubt ist. Das Projekt dient Bildung,
 - Runtime files are ignored by `.gitignore`.
 - Setup installer, standalone EXE, portable ZIP, and SHA256SUMS should be attached to GitHub Releases.
 - Main branch should stay source-first and auditable.
+
+### File Guide / Dosya Rehberi
+
+| Path | Purpose / Amaç |
+|---|---|
+| `bypass_silent.pyw`, `CleanNet_Launcher.bat` | Windows entry points / Windows başlatıcıları |
+| `cleannet/` | Proxy, DNS, strategies, settings and OS integration / Uygulama kaynak kodu |
+| `assets/` | Local dashboard and icons / Yerel arayüz ve simgeler |
+| `config.json` | Public Discord-only defaults; runtime settings are local / Herkese açık varsayılan ayarlar |
+| `requirements.txt` | Python dependencies / Python bağımlılıkları |
+| `tests/`, `run_tests.ps1` | Automated verification / Otomatik testler |
+| `scripts/` | Build, package verification and checksums / Derleme, paket kontrolü ve sağlama toplamları |
+| `installer/` | Inno Setup installer source and first-install defaults / Kurulum kaynakları |
+| `linux/` | Native Linux port with its own launcher, tests and packaging / Linux sürümü |
+| `RELEASE.md`, `CHANGELOG.md`, `VERSION` | Release instructions and version history / Yayın rehberi ve sürüm geçmişi |
+| `PRIVACY.md`, `SECURITY.md`, `SECURITY_HARDENING.md` | Data handling, security policy and implementation notes / Gizlilik ve güvenlik belgeleri |
+| `LICENSE` | MIT license / MIT lisansı |
+
+CleanNet does not need a browser-history or Windows-trace cleaner. Repository and release files are limited to the application, its documentation, tests and build tools. Generated logs, strategy state and build output belong in local ignored files; published binaries belong in GitHub Releases.
+
+CleanNet'in çalışması için tarayıcı geçmişini veya Windows izlerini silen bir araç gerekmez. Depo ve yayın paketleri uygulama, belgeler, testler ve derleme araçlarını içerir. Üretilen loglar, strateji verileri ve derleme çıktıları yerelde kalır; yayımlanan ikili dosyalar GitHub Releases bölümüne eklenir.
