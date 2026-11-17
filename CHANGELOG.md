@@ -1,5 +1,12 @@
 ﻿# Changelog
 
+## Unreleased
+
+- **Verified strategy success.** Training, self-training and the site test now complete a real TLS handshake (certificate, hostname and Finished checks) through each strategy. DPI block pages that answer with their own certificate are reported as "DPI intercepted" instead of success, and live connections the browser rejects right after a "successful" strategy are re-counted as failures. The dashboard shows a verification badge per site.
+- **Strategies.** Added `sni_multi_record`, `sni_tcp_drip`, `tls_record_tcp_split` and `tls_record_long_delay`. Retired `sni_padding`, `dot_shuffle`, `reverse_frag`, `tls_frag_overlap` and `tls_interleaved_ccs` from automatic selection: they either change ClientHello content (the server replies but the handshake fails) or can never be accepted. They still work when a site is locked to them.
+- **One codebase for Windows and Linux.** The `linux/` copy is gone; `cleannet/` selects `windows_integration` / `linux_integration`, the netstat / ss network monitor and the pystray / Qt tray at runtime. Linux docs moved to `docs/LINUX.md`; the Linux launcher and release scripts now live at the repository root and `scripts/`.
+- **CI.** GitHub Actions runs the test suite on Windows and Linux (Python 3.10 and 3.13) and builds and verifies the Linux release archive.
+
 ## 2.1.5 - 2026-11-18
 
 Security and reliability fix release.

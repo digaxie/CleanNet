@@ -1,4 +1,4 @@
-# CleanNet
+﻿# CleanNet
 
 CleanNet is a local, Windows-focused DPI bypass tool for people who want a transparent alternative to opaque VPN-like utilities. It runs on your own computer, listens only on `127.0.0.1`, and routes selected HTTPS connections through a local proxy that can fragment TLS ClientHello traffic.
 
@@ -8,7 +8,7 @@ Current version: `v2.1.5`
 
 Public default site list: Discord only. No personal/custom site list is included in this public package.
 
-**Linux:** A native Linux port (GNOME/KDE/desktop proxy integration, PyQt6 tray, `python -m cleannet`) lives in the [`linux/`](linux/) folder — see [`linux/README.md`](linux/README.md). The instructions below cover the Windows build.
+**Linux:** The same code runs natively on Linux (GNOME/KDE/desktop proxy integration, PyQt6 tray, `./cleannet-launcher.sh` or `python -m cleannet`) — see [`docs/LINUX.md`](docs/LINUX.md). The instructions below cover the Windows build.
 
 ## English
 
@@ -809,7 +809,7 @@ Verwenden Sie CleanNet nur dort, wo dies erlaubt ist. Das Projekt dient Bildung,
 | `tests/`, `run_tests.ps1` | Automated verification / Otomatik testler |
 | `scripts/` | Build, package verification and checksums / Derleme, paket kontrolü ve sağlama toplamları |
 | `installer/` | Inno Setup installer source and first-install defaults / Kurulum kaynakları |
-| `linux/` | Native Linux port with its own launcher, tests and packaging / Linux sürümü |
+| `docs/LINUX.md` | Linux usage, data locations and packaging / Linux kullanımı |
 | `RELEASE.md`, `CHANGELOG.md`, `VERSION` | Release instructions and version history / Yayın rehberi ve sürüm geçmişi |
 | `PRIVACY.md`, `SECURITY.md`, `SECURITY_HARDENING.md` | Data handling, security policy and implementation notes / Gizlilik ve güvenlik belgeleri |
 | `LICENSE` | MIT license / MIT lisansı |

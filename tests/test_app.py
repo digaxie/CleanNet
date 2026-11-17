@@ -441,5 +441,24 @@ class CleanNetAppTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(app.session_watcher)
 
 
+
+class EnableProxyFailureTests(unittest.TestCase):
+    def test_enable_system_proxy_does_not_claim_ownership_on_failure(self):
+        # A backend that cannot write the proxy (e.g. no GNOME/KDE settings) returns
+        # False; the app must not believe it owns the system proxy afterwards.
+        ctx, logger, state = CleanNetAppTests._context(
+            CleanNetAppTests(),
+            set_proxy_enabled=lambda enabled: (state["proxy"].append(enabled), False)[1],
+        )
+        app = CleanNetApp(ctx)
+
+        self.assertFalse(app.enable_system_proxy())
+
+        self.assertEqual(state["proxy"], [True])
+        self.assertEqual(state["recover"], 1)
+        self.assertFalse(app.proxy_owned)
+        self.assertIn(("error", "System proxy could not be enabled"), logger.messages)
+
+
 if __name__ == "__main__":
     unittest.main()

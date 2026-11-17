@@ -396,5 +396,54 @@ class DashboardSecurityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state["intensity"], "heavy")
 
 
+
+class PlatformDashboardTests(unittest.IsolatedAsyncioTestCase):
+    _server = DashboardServerTests._server
+
+    def test_loader_injects_platform(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            os.makedirs(os.path.join(tmp, "assets"))
+            with open(os.path.join(tmp, "assets", "dashboard.html"), "w", encoding="utf-8") as f:
+                f.write("const PLATFORM='__CLEANNET_PLATFORM__';")
+            load_dashboard_html.cache_clear()
+
+            html = load_dashboard_html(tmp, "9.9", "linux")
+            load_dashboard_html.cache_clear()
+
+        self.assertEqual(html, "const PLATFORM='linux';")
+
+    def test_shared_asset_marks_uwp_card_as_windows_only(self):
+        html = open(
+            os.path.join(os.path.dirname(__file__), "..", "assets", "dashboard.html"), encoding="utf-8"
+        ).read()
+
+        self.assertIn("const PLATFORM='__CLEANNET_PLATFORM__';", html)
+        self.assertIn('id="uwpCard"', html)
+        self.assertIn("if(PLATFORM!=='windows')", html)
+
+    async def test_fix_uwp_is_not_routed_without_windows_features(self):
+        server, _state = self._server()
+        server.ctx.windows_features = False
+        writer = _Writer()
+
+        await server.handle_http(
+            _Reader(b"POST /api/fix-uwp HTTP/1.1\r\nHost: 127.0.0.1:8888\r\n\r\n"), writer
+        )
+
+        self.assertIn(b"404 Not Found", bytes(writer.data))
+
+    async def test_stats_expose_linux_proxy_backend(self):
+        server, _state = self._server()
+        writer = _Writer()
+
+        with patch("cleannet.dashboard.get_proxy_summary", return_value={
+            "enabled": True, "owned_by_cleannet": True, "backend": "gnome",
+            "supported": True, "error": "", "manual_env_file": "", "backup": {"exists": True},
+        }):
+            await server.handle_http(_Reader(b"GET /api/stats HTTP/1.1\r\nHost: 127.0.0.1:8888\r\n\r\n"), writer)
+
+        self.assertIn(b'"proxy_backend": "gnome"', bytes(writer.data))
+
+
 if __name__ == "__main__":
     unittest.main()

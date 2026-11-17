@@ -42,6 +42,8 @@ try {
         @iconArgs `
         --add-data "cleannet;cleannet" `
         --add-data "assets;assets" `
+        --exclude-module PyQt6 `
+        --exclude-module PyQt5 `
         bypass_silent.pyw
 
     Write-Host "[OK] EXE build: $(Join-Path $root 'dist\CleanNet.exe')"

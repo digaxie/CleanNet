@@ -10,7 +10,7 @@ class SettingsTests(unittest.TestCase):
     def test_build_app_paths_derives_all_runtime_files(self):
         with tempfile.TemporaryDirectory() as tmp:
             app_file = os.path.join(tmp, "bypass_silent.pyw")
-            paths = build_app_paths(app_file)
+            paths = build_app_paths(app_file, system="win32")
 
             self.assertEqual(paths.script_dir, os.path.abspath(tmp))
             self.assertEqual(paths.app_file, os.path.abspath(app_file))
@@ -27,7 +27,7 @@ class SettingsTests(unittest.TestCase):
             with patch("sys.frozen", True, create=True), patch("sys.executable", exe_path), patch.dict(
                 os.environ, {"LOCALAPPDATA": tmp}
             ):
-                paths = build_app_paths(bundled_app)
+                paths = build_app_paths(bundled_app, system="win32")
 
             self.assertEqual(paths.script_dir, os.path.join(os.path.abspath(tmp), "CleanNet"))
             self.assertEqual(paths.app_file, os.path.abspath(exe_path))
@@ -42,7 +42,7 @@ class SettingsTests(unittest.TestCase):
             bundled_app = os.path.join(bundle_tmp, "bypass_silent.pyw")
 
             with patch("sys.frozen", True, create=True), patch("sys.executable", exe_path):
-                paths = build_app_paths(bundled_app)
+                paths = build_app_paths(bundled_app, system="win32")
 
             self.assertEqual(paths.script_dir, os.path.abspath(tmp))
             self.assertEqual(paths.app_file, os.path.abspath(exe_path))
@@ -53,7 +53,7 @@ class SettingsTests(unittest.TestCase):
             app_file = os.path.join(tmp, "bypass_silent.pyw")
 
             with patch.dict(os.environ, {"CLEANNET_DATA_DIR": data_tmp}):
-                paths = build_app_paths(app_file)
+                paths = build_app_paths(app_file, system="win32")
 
             self.assertEqual(paths.script_dir, os.path.abspath(data_tmp))
             self.assertEqual(paths.config_file, os.path.join(os.path.abspath(data_tmp), "config.json"))
@@ -94,6 +94,44 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.health_check_interval, 120)
         self.assertEqual(settings.ip_update_interval, 1800)
         self.assertEqual(settings.ping_target_host, "1.1.1.1")
+
+
+
+class LinuxPathTests(unittest.TestCase):
+    def test_build_app_paths_separates_source_and_xdg_data(self):
+        with tempfile.TemporaryDirectory() as source_tmp, tempfile.TemporaryDirectory() as xdg_tmp:
+            app_file = os.path.join(source_tmp, "cleannet", "__main__.py")
+            os.makedirs(os.path.dirname(app_file))
+
+            with patch.dict(os.environ, {"XDG_DATA_HOME": xdg_tmp}, clear=True):
+                paths = build_app_paths(app_file, system="linux")
+
+            expected_data = os.path.join(os.path.abspath(xdg_tmp), "cleannet")
+            self.assertEqual(paths.source_dir, os.path.abspath(source_tmp))
+            self.assertEqual(paths.data_dir, expected_data)
+            self.assertEqual(paths.script_dir, expected_data)
+            self.assertEqual(paths.config_file, os.path.join(expected_data, "config.json"))
+
+    def test_build_app_paths_default_xdg_location(self):
+        with tempfile.TemporaryDirectory() as source_tmp, tempfile.TemporaryDirectory() as home_tmp:
+            app_file = os.path.join(source_tmp, "cleannet", "__main__.py")
+            os.makedirs(os.path.dirname(app_file))
+
+            with patch.dict(os.environ, {"HOME": home_tmp}, clear=True):
+                paths = build_app_paths(app_file, system="linux")
+
+            expected = os.path.join(home_tmp, ".local", "share", "cleannet")
+            self.assertEqual(paths.data_dir, os.path.abspath(expected))
+
+    def test_data_dir_override_applies_on_linux(self):
+        with tempfile.TemporaryDirectory() as source_tmp, tempfile.TemporaryDirectory() as data_tmp:
+            app_file = os.path.join(source_tmp, "cleannet", "__main__.py")
+
+            with patch.dict(os.environ, {"CLEANNET_DATA_DIR": data_tmp}, clear=True):
+                paths = build_app_paths(app_file, system="linux")
+
+            self.assertEqual(paths.source_dir, os.path.abspath(source_tmp))
+            self.assertEqual(paths.data_dir, os.path.abspath(data_tmp))
 
 
 if __name__ == "__main__":

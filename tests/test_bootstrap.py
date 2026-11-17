@@ -50,7 +50,7 @@ def _write_runtime_files(
 
 class BootstrapTests(unittest.TestCase):
     def test_create_app_builds_runtime_without_installing_handlers(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"DPI_BYPASS_NO_DISK_LOG": "1"}):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"DPI_BYPASS_NO_DISK_LOG": "1", "CLEANNET_DATA_DIR": tmp}):
             _write_runtime_files(tmp)
             app_file = os.path.join(tmp, "bypass_silent.pyw")
 
@@ -69,7 +69,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(app.ctx.web_port, 9999)
 
     def test_contexts_share_runtime_state_and_paths(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"DPI_BYPASS_NO_DISK_LOG": "1"}):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"DPI_BYPASS_NO_DISK_LOG": "1", "CLEANNET_DATA_DIR": tmp}):
             _write_runtime_files(tmp)
 
             app = create_app(os.path.join(tmp, "bypass_silent.pyw"), install_handlers=False)
@@ -84,7 +84,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(runtime.tray_manager.ctx.web_port, runtime.settings.web_port)
 
     def test_reload_refreshes_state_and_dns_site_ips_reference(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"DPI_BYPASS_NO_DISK_LOG": "1"}):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"DPI_BYPASS_NO_DISK_LOG": "1", "CLEANNET_DATA_DIR": tmp}):
             _write_runtime_files(tmp, site_name="old")
             app = create_app(os.path.join(tmp, "bypass_silent.pyw"), install_handlers=False)
             runtime = app.runtime
@@ -101,7 +101,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertIsNone(runtime.find_site_for_host("old.test"))
 
     def test_reload_refreshes_performance_contexts(self):
-        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"DPI_BYPASS_NO_DISK_LOG": "1"}):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"DPI_BYPASS_NO_DISK_LOG": "1", "CLEANNET_DATA_DIR": tmp}):
             _write_runtime_files(tmp)
             app = create_app(os.path.join(tmp, "bypass_silent.pyw"), install_handlers=False)
             runtime = app.runtime
@@ -125,6 +125,18 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(runtime.background_tasks.ctx.ping_target_host, "8.8.8.8")
             self.assertTrue(runtime.training_manager.ctx.get_background_training_enabled())
             self.assertEqual(runtime.dashboard_server.ctx.get_performance_settings()["ping_target_host"], "8.8.8.8")
+
+
+
+class MergedLayoutTests(unittest.TestCase):
+    def test_python_m_cleannet_uses_project_root_for_assets(self):
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, {"DPI_BYPASS_NO_DISK_LOG": "1", "CLEANNET_DATA_DIR": tmp}):
+            _write_runtime_files(tmp)
+            app = create_app(os.path.join(tmp, "cleannet", "__main__.py"), install_handlers=False)
+
+            self.assertEqual(app.runtime.paths.source_dir, os.path.abspath(tmp))
+            self.assertEqual(app.runtime.paths.data_dir, os.path.abspath(tmp))
+            self.assertEqual(app.runtime.dashboard_html, "<html><body>v2.1.5</body></html>")
 
 
 if __name__ == "__main__":

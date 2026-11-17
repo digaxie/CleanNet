@@ -74,7 +74,11 @@ class CleanNetApp:
         if self.proxy_owned:
             return True
         self.ctx.recover_proxy()
-        self.ctx.set_proxy_enabled(True)
+        # Backends return False when they could not write the proxy (e.g. no GNOME/KDE
+        # proxy settings on Linux); don't claim ownership of a proxy we never set.
+        if self.ctx.set_proxy_enabled(True) is False:
+            self.ctx.logger.error("System proxy could not be enabled")
+            return False
         self.proxy_owned = True
         if self.ctx.ensure_proxy_enabled:
             self.ctx.ensure_proxy_enabled()

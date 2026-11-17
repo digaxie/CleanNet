@@ -1,0 +1,61 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Tests (${{ matrix.os }}, Python ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python: ["3.10", "3.13"]
+    runs-on: ${{ matrix.os }}
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # Windows runs with the real tray dependencies. Linux runners are headless, so the
+      # tray stays unavailable there exactly as on a server; tests use fakes either way.
+      - name: Install Windows runtime dependencies
+        if: runner.os == 'Windows'
+        run: python -m pip install -r requirements.txt
+
+      - name: Compile
+        run: python -m compileall -q cleannet tests
+
+      - name: Run unit tests
+        run: python -m unittest discover -s tests -v
+
+  linux-release:
+    name: Linux release archive
+    runs-on: ubuntu-latest
+    needs: unit-tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Build and verify the Linux tarball
+        run: scripts/verify_linux_release.sh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cleannet-linux
+          path: |
+            dist/cleannet-linux-*.tar.gz
+            dist/SHA256SUMS.txt
+          if-no-files-found: error

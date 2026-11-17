@@ -74,7 +74,10 @@ try {
         "--workpath", $workPath,
         "--specpath", $specPath,
         "--add-data", $cleannetData,
-        "--add-data", $assetsData
+        "--add-data", $assetsData,
+        # The Linux tray backend is never used on Windows; keep Qt out of the bundle.
+        "--exclude-module", "PyQt6",
+        "--exclude-module", "PyQt5"
     )
     if (Test-Path -LiteralPath $iconIco) {
         $pyinstallerArgs += @("--icon", $iconIco)
