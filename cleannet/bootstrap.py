@@ -80,13 +80,8 @@ class CleanNetRuntime:
             train_intensity=self.state.ai_train_intensity,
             save_interval=self.settings.ai_save_interval,
             min_samples=self.settings.ai_min_samples,
-            decay_factor=self.settings.ai_decay_factor,
+            discount=self.settings.ai_discount,
             ring_buffer_size=self.settings.ai_ring_buffer_size,
-            drift_check_interval=self.settings.ai_drift_check_interval,
-            nn_hidden_size=self.settings.ai_nn_hidden_size,
-            nn_input_size=self.settings.ai_nn_input_size,
-            nn_learning_rate=self.settings.ai_nn_learning_rate,
-            thompson_decay_interval=self.settings.ai_thompson_decay_interval,
         )
         self.state.set_ai_train_intensity(self.ai_engine.train_intensity)
 

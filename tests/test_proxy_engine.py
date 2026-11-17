@@ -403,5 +403,28 @@ class ClientRejectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(ProxyEngine.looks_rejected_by_client(stats))
 
 
+
+class ConnectionMetricTests(unittest.TestCase):
+    def test_outcome_is_forwarded_to_engine(self):
+        calls = []
+
+        class _Engine:
+            def record_connection(self, site, first_try, connect_ms):
+                calls.append((site, first_try, connect_ms))
+
+        context = ProxyEngineTests._context(None)
+        context.ai_engine = _Engine()
+
+        ProxyEngine(context).record_connection_outcome("discord", first_try=True, connect_ms=120.0)
+
+        self.assertEqual(calls, [("discord", True, 120.0)])
+
+    def test_engines_without_metrics_are_tolerated(self):
+        context = ProxyEngineTests._context(None)
+        context.ai_engine = object()
+
+        ProxyEngine(context).record_connection_outcome("discord", first_try=False, connect_ms=None)
+
+
 if __name__ == "__main__":
     unittest.main()

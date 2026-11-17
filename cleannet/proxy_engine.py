@@ -206,6 +206,16 @@ class ProxyEngine:
             and tunnel_stats.get("duration", 99.0) <= CLIENT_REJECT_WINDOW
         )
 
+    def record_connection_outcome(self, site_name: str, *, first_try: bool, connect_ms: float | None) -> None:
+        """Feed the engine's honest live metrics: first-try success and time to connect."""
+        recorder = getattr(self.ctx.ai_engine, "record_connection", None)
+        if recorder is None:
+            return
+        try:
+            recorder(site_name, first_try, connect_ms)
+        except Exception as exc:
+            self.ctx.logger.debug(f"[AI] connection metric error: {exc}")
+
     def record_client_rejection(self, site_name: str, strategy: str, target_host: str) -> None:
         self.ctx.stats["client_rejections"] = self.ctx.stats.get("client_rejections", 0) + 1
         self.ctx.strategy_cache.record_failure(site_name, strategy)
@@ -543,6 +553,8 @@ class ProxyEngine:
                     ip_pools_to_try.append(fallback)
 
             max_ips_per_pool = 2 if not is_main else len(pool_1)
+            attempts = 0
+            connect_started = time.perf_counter()
             success = False
             all_conn_failed = True
 
@@ -556,6 +568,7 @@ class ProxyEngine:
                     remaining_ips = [ip for ip in ip_pool if ip != try_ip]
                     for strat_name in strategies:
                         self.ctx.stats["strategy_tries"] += 1
+                        attempts += 1
                         server_reader, server_writer = await self.try_connect(try_ip, target_port, remaining_ips)
                         if not server_writer:
                             break
@@ -608,7 +621,6 @@ class ProxyEngine:
                         elapsed_ms = (time.perf_counter() - start_t) * 1000
                         self.ctx.strategy_cache.record_success(site_name, strat_name, elapsed_ms)
                         self.ctx.ai_engine.record(site_name, strat_name, True, elapsed_ms)
-                        self.ctx.ai_engine.record_prediction_result(site_name, strat_name)
                         self.ctx.strategy_history.append({
                             "time": datetime.now().strftime("%H:%M:%S"),
                             "site": site_name,
@@ -631,9 +643,14 @@ class ProxyEngine:
 
                         writer.write(server_reply)
                         await writer.drain()
+                        connect_ms = (time.perf_counter() - connect_started) * 1000
                         tunnel_stats = await self.tunnel_plain(reader, writer, server_reader, server_writer)
-                        if self.looks_rejected_by_client(tunnel_stats):
+                        rejected = self.looks_rejected_by_client(tunnel_stats)
+                        if rejected:
                             self.record_client_rejection(site_name, strat_name, target_host)
+                        self.record_connection_outcome(
+                            site_name, first_try=attempts == 1 and not rejected, connect_ms=None if rejected else connect_ms
+                        )
                         success = True
                         break
 
@@ -678,9 +695,14 @@ class ProxyEngine:
                             writer.write(server_reply)
                             await writer.drain()
                             server_writer = server_writer_h
+                            connect_ms = (time.perf_counter() - connect_started) * 1000
                             tunnel_stats = await self.tunnel_plain(reader, writer, server_reader_h, server_writer_h)
-                            if self.looks_rejected_by_client(tunnel_stats):
+                            rejected = self.looks_rejected_by_client(tunnel_stats)
+                            if rejected:
                                 self.record_client_rejection(site_name, fallback_strat, target_host)
+                            self.record_connection_outcome(
+                                site_name, first_try=False, connect_ms=None if rejected else connect_ms
+                            )
                             return
                     except Exception:
                         pass
@@ -688,6 +710,7 @@ class ProxyEngine:
 
             if site_name in self.ctx.site_stats:
                 self.ctx.site_stats[site_name]["failures"] += 1
+            self.record_connection_outcome(site_name, first_try=False, connect_ms=None)
             if all_conn_failed and not is_main:
                 self.ctx.blocked_domains[target_lower] = time.time()
                 self.ctx.logger.warning(

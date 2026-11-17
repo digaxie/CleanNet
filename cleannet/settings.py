@@ -40,15 +40,10 @@ class RuntimeSettings:
     strategy_save_interval: int = 60
     ai_save_interval: int = 120
     ai_min_samples: int = 5
-    ai_exploration_rate: float = 0.15
-    ai_decay_factor: float = 0.95
+    # Per-observation discount of the strategy posteriors (memory of ~50 observations).
+    ai_discount: float = 0.98
     ai_ring_buffer_size: int = 100
-    ai_drift_check_interval: int = 60
     ai_self_train_interval: int = 1800
-    ai_nn_hidden_size: int = 16
-    ai_nn_input_size: int = 10
-    ai_nn_learning_rate: float = 0.01
-    ai_thompson_decay_interval: int = 200
     blocked_domain_ttl: int = 300
     site_max_concurrent: int = 24
     dns_privacy_cache_ttl: int = 900

@@ -736,6 +736,9 @@ if(PLATFORM==='linux'){
   Object.assign(I.tr,{setup_subtitle:'CleanNet Linux proxy ayarini degistirmeden once ne yapacagini gosterir ve kontrolu sana birakir.',setup_intro:'CleanNet bilgisayarinda yerel calisir. Sadece 127.0.0.1 uzerinden dinler, verileri Linux kullanici profilinde tutar ve sen onay vermeden proxy entegrasyonunu acmaz.',setup_proxy_desc:'Start CleanNet demeden Linux proxy entegrasyonu kapali kalir. Tray veya dashboarddan guvenli sekilde sifirlayabilirsin.',setup_note:'CleanNet baslatildiginda sadece kullanici seviyesinde Linux proxy ayari veya manuel proxy env dosyasi yazar. Driver, servis, sertifika veya sistem geneli hook kurmaz.',info_config:'Yapilandirmayi ve teshisleri disa/iceye aktarin'});
   Object.assign(I.de,{setup_subtitle:'Bevor CleanNet die Linux-Proxy-Einstellungen aendert, sehen Sie genau was passiert und starten selbst.',setup_intro:'CleanNet laeuft lokal auf Ihrem Computer. Es hoert auf 127.0.0.1, speichert Daten in Ihrem Linux-Benutzerprofil und aktiviert die Proxy-Integration erst nach Ihrer Bestaetigung.',setup_proxy_desc:'Die Linux-Proxy-Integration bleibt aus, bis Sie Start CleanNet druecken. Sie koennen sie im Tray oder Dashboard zuruecksetzen.',setup_note:'CleanNet schreibt beim Start nur benutzerbezogene Linux-Proxy-Einstellungen oder eine manuelle Proxy-env-Datei. Es installiert keine Treiber, Dienste, Zertifikate oder systemweiten Hooks.',info_config:'Konfiguration und Diagnose exportieren/importieren'});
 }
+Object.assign(I.en,{ai_accuracy:'First-try success',ai_predictions:'Avg connect',info_ai:'Learns per site which strategy gets a verified connection on your network. Live traffic always uses the best known order; trying new strategies happens in background probes.'});
+Object.assign(I.tr,{ai_accuracy:'Ilk deneme basarisi',ai_predictions:'Ort. baglanma',info_ai:'Her site icin aginda dogrulanmis baglanti saglayan stratejiyi ogrenir. Canli trafik her zaman bilinen en iyi sirayi kullanir; yeni stratejiler arka plan problarinda denenir.'});
+Object.assign(I.de,{ai_accuracy:'Erstversuch-Erfolg',ai_predictions:'Verbindungszeit',info_ai:'Lernt pro Website, welche Strategie in Ihrem Netz eine verifizierte Verbindung schafft. Live-Verkehr nutzt immer die beste bekannte Reihenfolge; neue Strategien werden in Hintergrund-Proben getestet.'});
 function t(k){return I[L][k]||I.en[k]||k}
 document.addEventListener('DOMContentLoaded',()=>{if(PLATFORM!=='windows'){const c=document.getElementById('uwpCard');if(c)c.remove();}});
 function pColor(st){
@@ -1481,7 +1484,7 @@ function renderAI(ai,sites){
   if(!ai)return;
   acc.textContent=ai.accuracy+'%';
   acc.style.color=ai.accuracy>70?'var(--green)':ai.accuracy>40?'var(--orange)':'var(--red)';
-  pred.textContent=ai.total_predictions;
+  pred.textContent=ai.avg_connect_ms!=null?Math.round(ai.avg_connect_ms)+'ms':'--';
   obs.textContent=ai.total_observations;
   aiSites.textContent=ai.sites_with_data;
   if(ai.sites_with_data>0){
