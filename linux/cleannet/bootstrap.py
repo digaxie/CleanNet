@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import sys
 from datetime import datetime
 from typing import Any
@@ -103,7 +104,25 @@ class CleanNetRuntime:
 
     def reload_config_dynamically(self) -> bool:
         self.state.apply_config(self.load_config(), build_lists_from_config)
-        self.settings = build_runtime_settings(self.state.config)
+        new_settings = build_runtime_settings(self.state.config)
+        if self.get_running() and (
+            new_settings.local_port != self.settings.local_port
+            or new_settings.web_port != self.settings.web_port
+        ):
+            # The listening sockets are bound once at startup. Switching the system proxy
+            # to a port nothing listens on would cut the user's internet, so keep the
+            # running ports until the next restart.
+            self.logger.warning(
+                "[CONFIG] Port change takes effect after restart "
+                f"(proxy {self.settings.local_port}->{new_settings.local_port}, "
+                f"dashboard {self.settings.web_port}->{new_settings.web_port})"
+            )
+            new_settings = dataclasses.replace(
+                new_settings,
+                local_port=self.settings.local_port,
+                web_port=self.settings.web_port,
+            )
+        self.settings = new_settings
         self.refresh_runtime_contexts()
         if self.get_running() and self.app and self.app.proxy_owned:
             self.set_proxy(True, self.settings.local_host, self.settings.local_port)
@@ -134,6 +153,7 @@ class CleanNetRuntime:
         dashboard_ctx = self.dashboard_server.ctx
         dashboard_ctx.local_host = self.settings.local_host
         dashboard_ctx.local_port = self.settings.local_port
+        dashboard_ctx.web_port = self.settings.web_port
 
         tray_ctx = self.tray_manager.ctx
         tray_ctx.local_host = self.settings.local_host
@@ -465,6 +485,7 @@ class CleanNetRuntime:
             local_host=self.settings.local_host,
             local_port=self.settings.local_port,
             strategy_names=list(STRATEGY_ORDER),
+            web_port=self.settings.web_port,
         )
 
     def force_save_runtime_state(self) -> None:

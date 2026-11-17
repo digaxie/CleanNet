@@ -8,6 +8,7 @@ import fnmatch
 import ipaddress
 import platform
 import subprocess
+import threading
 import time
 from typing import Any, Callable
 
@@ -175,6 +176,9 @@ class NetworkMonitor:
         self._cached_flows: list[NetworkFlow] = []
         self._cached_at = 0.0
         self._last_error = ""
+        # Snapshots now run on executor threads; serialize refreshes so that several
+        # dashboard requests arriving together do not each spawn netstat/tasklist.
+        self._refresh_lock = threading.Lock()
 
     def supported(self) -> bool:
         return self.system.lower() == "windows"
@@ -195,21 +199,23 @@ class NetworkMonitor:
                 "error": "network flow snapshot is only supported on Windows",
             }
 
-        now = time.time()
         bypass_entries = list(always_bypass or []) + list(proxy_bypass or [])
-        if use_cache and self._cached_flows and now - self._cached_at < self.cache_ttl:
-            flows = self._apply_exception_flags(self._cached_flows, bypass_entries)
-        else:
-            try:
-                netstat = self.runner(["netstat", "-ano"], 4.0)
-                process_names = self._load_process_names()
-                flows = _parse_netstat(netstat.stdout, process_names, bypass_entries)
-                self._cached_flows = flows
-                self._cached_at = now
-                self._last_error = ""
-            except Exception as exc:
-                flows = []
-                self._last_error = str(exc)
+        with self._refresh_lock:
+            now = time.time()
+            if use_cache and self._cached_flows and now - self._cached_at < self.cache_ttl:
+                flows = self._apply_exception_flags(self._cached_flows, bypass_entries)
+            else:
+                try:
+                    netstat = self.runner(["netstat", "-ano"], 4.0)
+                    process_names = self._load_process_names()
+                    flows = _parse_netstat(netstat.stdout, process_names, bypass_entries)
+                    self._cached_flows = flows
+                    self._cached_at = now
+                    self._last_error = ""
+                except Exception as exc:
+                    flows = []
+                    self._last_error = str(exc)
+            flows = list(flows)
 
         flows.sort(key=lambda item: (item.process_name.lower(), item.pid, item.protocol, item.remote_address))
         limited = flows[: max(0, limit)]

@@ -10,6 +10,9 @@ class _Logger:
     def info(self, message):
         self.messages.append(message)
 
+    def warning(self, message):
+        self.messages.append(message)
+
 
 class ConfigMutationServiceTests(unittest.TestCase):
     def _service(self):
@@ -62,9 +65,41 @@ class ConfigMutationServiceTests(unittest.TestCase):
         result = service.add_site({"domain": "www.NewSite.com"})
 
         self.assertIn("newsite", config["sites"])
-        self.assertEqual(config["sites"]["newsite"]["domains"], ["www.newsite.com", "www.www.newsite.com"])
+        # Regression: "www." input used to produce ["www.newsite.com", "www.www.newsite.com"].
+        self.assertEqual(config["sites"]["newsite"]["domains"], ["newsite.com", "www.newsite.com"])
         self.assertEqual(state, {"saves": 1, "reloads": 1})
         self.assertTrue(result.refresh_ips)
+
+    def test_add_site_normalizes_urls(self):
+        service, config, _state, _logger = self._service()
+
+        result = service.add_site({"domain": "https://Other.Example.org:443/some/path"})
+
+        self.assertTrue(result.changed)
+        self.assertEqual(config["sites"]["other"]["domains"], ["other.example.org", "www.other.example.org"])
+
+    def test_add_site_rejects_invalid_hostnames(self):
+        service, config, state, _logger = self._service()
+        before = dict(config["sites"])
+
+        result = service.add_site({"domain": "<script>alert(1)</script>"})
+
+        self.assertFalse(result.changed)
+        self.assertEqual(config["sites"], before)
+        self.assertEqual(state, {"saves": 0, "reloads": 0})
+
+    def test_add_site_merges_into_existing_site_with_same_name(self):
+        # Regression: adding "example.net" replaced the whole "example" site config.
+        service, config, _state, _logger = self._service()
+        config["sites"]["example"]["strategy"] = "host_split"
+        original_domains = list(config["sites"]["example"]["domains"])
+
+        service.add_site({"domain": "example.net"})
+
+        site = config["sites"]["example"]
+        self.assertEqual(site["domains"][: len(original_domains)], original_domains)
+        self.assertIn("example.net", site["domains"])
+        self.assertEqual(site["strategy"], "host_split")
 
     def test_add_and_remove_cdn_domain_update_domain_lists(self):
         service, config, state, _logger = self._service()
@@ -152,6 +187,21 @@ class ConfigMutationServiceTests(unittest.TestCase):
 
         self.assertTrue(config["privacy"]["hide_dns"])
         self.assertEqual(state, {"saves": 1, "reloads": 0})
+
+    def test_import_config_validates_types(self):
+        service, config, _state, _logger = self._service()
+
+        result = service.import_config({
+            "sites": {"bad": {"domains": "not-a-list"}, "ok": {"domains": ["OK.test", 5]}},
+            "proxy_port": True,
+            "proxy_bypass": ["*.x.test", None],
+        })
+
+        self.assertTrue(result.changed)
+        self.assertNotIn("bad", config["sites"])
+        self.assertEqual(config["sites"]["ok"]["domains"], ["ok.test"])
+        self.assertEqual(config["proxy_port"], 8080)
+        self.assertEqual(config["proxy_bypass"], ["*.x.test"])
 
     def test_import_config_requires_sites(self):
         service, config, state, _logger = self._service()

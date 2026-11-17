@@ -1,4 +1,4 @@
-﻿"""TLS ClientHello fragmentation and desync strategies."""
+"""TLS ClientHello fragmentation and desync strategies."""
 
 from __future__ import annotations
 
@@ -18,7 +18,8 @@ class StrategyRuntimeContext:
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
 
 
-def _find_sni_offset(data):
+def _find_extensions_length_offset(data):
+    """Absolute offset of the 2-byte ClientHello extensions-length field, or None."""
     try:
         if len(data) < 43 or data[0] != 0x16:
             return None
@@ -37,7 +38,17 @@ def _find_sni_offset(data):
         pos += 1 + cm_len
         if pos + 2 > len(data):
             return None
-        pos += 2
+        return pos
+    except Exception:
+        return None
+
+
+def _find_sni_offset(data):
+    try:
+        ext_len_off = _find_extensions_length_offset(data)
+        if ext_len_off is None:
+            return None
+        pos = ext_len_off + 2
         ext_end = min(pos + int.from_bytes(data[pos-2:pos], 'big'), len(data))
         while pos + 4 <= ext_end:
             ext_type = int.from_bytes(data[pos:pos+2], 'big')
@@ -281,23 +292,29 @@ class StrategySet:
             try:
                 # Find extensions area and add padding extension (type 0x0015)
                 sni_off = _find_sni_offset(data)
-                if sni_off and sni_off > 43:
-                    record_payload = data[5:]
-                    # Build padding extension: type=0x0015, length=256, data=256 zero bytes
-                    pad_ext = b'\x00\x15\x01\x00' + (b'\x00' * 256)
+                ext_len_off = _find_extensions_length_offset(data)
+                # Build padding extension: type=0x0015, length=256, data=256 zero bytes
+                pad_ext = b'\x00\x15\x01\x00' + (b'\x00' * 256)
+                if (
+                    sni_off and sni_off > 43
+                    and ext_len_off is not None
+                    and len(data) - 5 + len(pad_ext) <= 16384
+                ):
+                    record_payload = bytearray(data[5:])
+                    # Fix the extensions total length. Without this the server parses the
+                    # padding as the end of the extension block and rejects the ClientHello.
+                    ext_len_idx = ext_len_off - 5
+                    old_ext_len = int.from_bytes(record_payload[ext_len_idx:ext_len_idx+2], 'big')
+                    record_payload[ext_len_idx:ext_len_idx+2] = (old_ext_len + len(pad_ext)).to_bytes(2, 'big')
+                    # Fix the handshake length (payload[1:4])
+                    old_hs_len = int.from_bytes(record_payload[1:4], 'big')
+                    record_payload[1:4] = (old_hs_len + len(pad_ext)).to_bytes(3, 'big')
                     # Insert padding extension right before SNI extension
                     insert_at = sni_off - 5
-                    new_payload = record_payload[:insert_at] + pad_ext + record_payload[insert_at:]
-                    # Fix extensions length (2 bytes before first extension)
+                    new_payload = bytes(record_payload[:insert_at]) + pad_ext + bytes(record_payload[insert_at:])
                     # Rebuild as single TLS record
                     content_type = data[0]
                     tls_version = data[1:3]
-                    # Fix the handshake length (bytes 6-8 in original = payload[1:4])
-                    hs_type = new_payload[0]
-                    old_hs_len = int.from_bytes(new_payload[1:4], 'big')
-                    new_hs_len = old_hs_len + len(pad_ext)
-                    new_payload = bytes([hs_type]) + new_hs_len.to_bytes(3, 'big') + new_payload[4:]
-                    # Fix extensions total length
                     new_record = bytes([content_type]) + tls_version + len(new_payload).to_bytes(2, 'big') + new_payload
                     writer.write(new_record)
                     await writer.drain()

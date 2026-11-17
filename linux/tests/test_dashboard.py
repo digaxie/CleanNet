@@ -208,7 +208,7 @@ class DashboardServerTests(unittest.IsolatedAsyncioTestCase):
             "manual_env_file": "",
             "backup": {"exists": True},
         }):
-            await server.handle_http(_Reader(b"GET /api/stats HTTP/1.1\r\nHost: x\r\n\r\n"), writer)
+            await server.handle_http(_Reader(b"GET /api/stats HTTP/1.1\r\nHost: 127.0.0.1:8888\r\n\r\n"), writer)
 
         raw = bytes(writer.data)
         self.assertIn(b"200 OK", raw)
@@ -221,7 +221,7 @@ class DashboardServerTests(unittest.IsolatedAsyncioTestCase):
         server, _state = self._server()
         writer = _Writer()
 
-        await server.handle_http(_Reader(b"POST /api/fix-uwp HTTP/1.1\r\nHost: x\r\n\r\n"), writer)
+        await server.handle_http(_Reader(b"POST /api/fix-uwp HTTP/1.1\r\nHost: 127.0.0.1:8888\r\n\r\n"), writer)
 
         self.assertIn(b"404 Not Found", bytes(writer.data))
 
@@ -231,7 +231,7 @@ class DashboardServerTests(unittest.IsolatedAsyncioTestCase):
 
         await server.handle_http(
             _Reader(
-                b"POST /api/ai-train-intensity HTTP/1.1\r\nHost: x\r\n\r\n",
+                b"POST /api/ai-train-intensity HTTP/1.1\r\nHost: 127.0.0.1:8888\r\n\r\n",
                 b'{"intensity":"heavy"}',
             ),
             writer,
@@ -246,7 +246,7 @@ class DashboardServerTests(unittest.IsolatedAsyncioTestCase):
 
         await server.handle_http(
             _Reader(
-                b"POST /api/performance-settings HTTP/1.1\r\nHost: x\r\n\r\n",
+                b"POST /api/performance-settings HTTP/1.1\r\nHost: 127.0.0.1:8888\r\n\r\n",
                 b'{"low_latency_mode":false,"background_training":true,"health_check_interval":300,"ip_update_interval":900,"ping_target_host":"8.8.8.8"}',
             ),
             writer,
@@ -265,14 +265,14 @@ class DashboardServerTests(unittest.IsolatedAsyncioTestCase):
 
         writer = _Writer()
         await server.handle_http(
-            _Reader(b"GET /api/onboarding HTTP/1.1\r\nHost: x\r\n\r\n"),
+            _Reader(b"GET /api/onboarding HTTP/1.1\r\nHost: 127.0.0.1:8888\r\n\r\n"),
             writer,
         )
         self.assertIn(b'"completed": false', bytes(writer.data))
 
         writer = _Writer()
         await server.handle_http(
-            _Reader(b"POST /api/onboarding/complete HTTP/1.1\r\nHost: x\r\n\r\n", b"{}"),
+            _Reader(b"POST /api/onboarding/complete HTTP/1.1\r\nHost: 127.0.0.1:8888\r\n\r\n", b"{}"),
             writer,
         )
 
@@ -285,7 +285,7 @@ class DashboardServerTests(unittest.IsolatedAsyncioTestCase):
         writer = _Writer()
         await server.handle_http(
             _Reader(
-                b"POST /api/network-exception HTTP/1.1\r\nHost: x\r\n\r\n",
+                b"POST /api/network-exception HTTP/1.1\r\nHost: 127.0.0.1:8888\r\n\r\n",
                 b'{"entry":"203.0.113.10","source":"network-flow"}',
             ),
             writer,
@@ -296,7 +296,7 @@ class DashboardServerTests(unittest.IsolatedAsyncioTestCase):
         writer = _Writer()
         await server.handle_http(
             _Reader(
-                b"POST /api/network-exception HTTP/1.1\r\nHost: x\r\n\r\n",
+                b"POST /api/network-exception HTTP/1.1\r\nHost: 127.0.0.1:8888\r\n\r\n",
                 b'{"pid":123,"mode":"current-process-endpoints"}',
             ),
             writer,
@@ -310,7 +310,7 @@ class DashboardServerTests(unittest.IsolatedAsyncioTestCase):
         writer = _Writer()
         await server.handle_http(
             _Reader(
-                b"POST /api/site-strategy HTTP/1.1\r\nHost: x\r\n\r\n",
+                b"POST /api/site-strategy HTTP/1.1\r\nHost: 127.0.0.1:8888\r\n\r\n",
                 b'{"site":"example","strategy":"host_split"}',
             ),
             writer,
@@ -321,7 +321,7 @@ class DashboardServerTests(unittest.IsolatedAsyncioTestCase):
         writer = _Writer()
         await server.handle_http(
             _Reader(
-                b"POST /api/site-strategy HTTP/1.1\r\nHost: x\r\n\r\n",
+                b"POST /api/site-strategy HTTP/1.1\r\nHost: 127.0.0.1:8888\r\n\r\n",
                 b'{"site":"example","strategy":"auto"}',
             ),
             writer,
@@ -332,12 +332,93 @@ class DashboardServerTests(unittest.IsolatedAsyncioTestCase):
         writer = _Writer()
         await server.handle_http(
             _Reader(
-                b"POST /api/site-strategy HTTP/1.1\r\nHost: x\r\n\r\n",
+                b"POST /api/site-strategy HTTP/1.1\r\nHost: 127.0.0.1:8888\r\n\r\n",
                 b'{"site":"example","strategy":"bad"}',
             ),
             writer,
         )
         self.assertIn(b"400 Bad Request", bytes(writer.data))
+
+
+class _ChunkedBodyReader(_Reader):
+    """Delivers the body in small pieces, like a large upload split by TCP."""
+
+    def __init__(self, request: bytes, body: bytes, piece: int = 7):
+        super().__init__(request)
+        self._pieces = [body[i:i + piece] for i in range(0, len(body), piece)]
+
+    async def read(self, _limit):
+        return self._pieces.pop(0) if self._pieces else b""
+
+
+class DashboardSecurityTests(unittest.IsolatedAsyncioTestCase):
+    _server = DashboardServerTests._server
+
+    async def _post(self, server, headers: bytes, body: bytes = b'{"intensity":"heavy"}'):
+        writer = _Writer()
+        await server.handle_http(
+            _Reader(b"POST /api/ai-train-intensity HTTP/1.1\r\n" + headers + b"\r\n", body),
+            writer,
+        )
+        return bytes(writer.data)
+
+    async def test_rejects_cross_site_post(self):
+        # Regression: any website could POST to the local API (CSRF).
+        server, state = self._server()
+
+        raw = await self._post(server, b"Host: 127.0.0.1:8888\r\nOrigin: https://evil.example\r\n")
+
+        self.assertIn(b"403 Forbidden", raw)
+        self.assertNotEqual(state.get("intensity"), "heavy")
+
+    async def test_rejects_post_flagged_cross_site_by_fetch_metadata(self):
+        server, state = self._server()
+
+        raw = await self._post(server, b"Host: 127.0.0.1:8888\r\nSec-Fetch-Site: cross-site\r\n")
+
+        self.assertIn(b"403 Forbidden", raw)
+        self.assertNotEqual(state.get("intensity"), "heavy")
+
+    async def test_rejects_dns_rebinding_host(self):
+        server, _state = self._server()
+        writer = _Writer()
+
+        await server.handle_http(_Reader(b"GET /api/export-config HTTP/1.1\r\nHost: rebind.evil.example:8888\r\n\r\n"), writer)
+
+        self.assertIn(b"403 Forbidden", bytes(writer.data))
+
+    async def test_rejects_wrong_dashboard_port_in_origin(self):
+        server, _state = self._server()
+
+        raw = await self._post(server, b"Host: 127.0.0.1:8888\r\nOrigin: http://127.0.0.1:3000\r\n")
+
+        self.assertIn(b"403 Forbidden", raw)
+
+    async def test_allows_same_origin_post(self):
+        server, state = self._server()
+
+        raw = await self._post(server, b"Host: localhost:8888\r\nOrigin: http://localhost:8888\r\n")
+
+        self.assertIn(b"200 OK", raw)
+        self.assertEqual(state["intensity"], "heavy")
+
+    async def test_reads_body_split_across_reads_using_content_length(self):
+        # Regression: only the first read() of the body was parsed.
+        server, state = self._server()
+        body = b'{"intensity":"heavy"}'
+        writer = _Writer()
+
+        await server.handle_http(
+            _ChunkedBodyReader(
+                b"POST /api/ai-train-intensity HTTP/1.1\r\nHost: 127.0.0.1:8888\r\n"
+                + f"Content-Length: {len(body)}\r\n\r\n".encode(),
+                body,
+            ),
+            writer,
+        )
+
+        self.assertIn(b"200 OK", bytes(writer.data))
+        self.assertEqual(state["intensity"], "heavy")
 
 
 if __name__ == "__main__":

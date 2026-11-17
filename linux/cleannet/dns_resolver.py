@@ -67,7 +67,9 @@ def read_http_response(sock, max_bytes: int = 256 * 1024) -> bytes | None:
     header_bytes, body = data.split(b"\r\n\r\n", 1)
     header_lines = header_bytes.split(b"\r\n")
     status_line = header_lines[0].decode("iso-8859-1", errors="ignore")
-    if " 200 " not in status_line:
+    # "HTTP/1.1 200" without a reason phrase is valid; don't require " 200 ".
+    status_parts = status_line.split()
+    if len(status_parts) < 2 or status_parts[1] != "200":
         return None
 
     content_length = None
@@ -215,7 +217,7 @@ class DnsResolver:
             self.ctx.privacy_cache[domain] = {"ips": list(known_ips), "ts": now}
             return list(known_ips)
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         ips = await loop.run_in_executor(None, self.resolve_domain_doh, domain)
         if ips:
             self.ctx.privacy_cache[domain] = {"ips": list(ips), "ts": self.ctx.time_func()}
@@ -226,7 +228,7 @@ class DnsResolver:
         return []
 
     async def resolve_bypass_ips(self) -> bool:
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         all_new_ips: set[str] = set()
         resolved_domains = 0
 

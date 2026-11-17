@@ -15,6 +15,7 @@ from .proxy import (
     parse_connect_target,
     parse_http_forward_target,
     rewrite_http_forward_request,
+    tls_record_end,
 )
 
 
@@ -26,6 +27,10 @@ Writer = Any
 # every hostname connect hang on the AAAA address until try_connect's outer timeout
 # kills it before IPv4 is ever tried.
 HAPPY_EYEBALLS_DELAY = 0.25
+
+# Upper bounds for buffering the client's first bytes before acting on them.
+MAX_REQUEST_HEADER_BYTES = 64 * 1024
+MAX_CLIENT_HELLO_BYTES = 16 * 1024 + 5  # one TLS record: 2^14 payload + 5-byte header
 
 
 async def open_connection_dual_stack(host, port):
@@ -76,6 +81,66 @@ def close_writer(writer: Writer | None) -> None:
 class ProxyEngine:
     def __init__(self, context: ProxyRuntimeContext):
         self.ctx = context
+
+    @staticmethod
+    async def read_request_head(reader, data: bytes, timeout: float = 10) -> bytes:
+        """Keep reading until the HTTP header block is complete (or a size/time limit hits).
+
+        A single ``read()`` can return only part of the request when headers are large
+        (cookies, long URLs) or the client writes them in pieces; the request used to be
+        dropped silently in that case.
+        """
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while b"\r\n\r\n" not in data and len(data) < MAX_REQUEST_HEADER_BYTES:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            try:
+                chunk = await asyncio.wait_for(reader.read(8192), timeout=remaining)
+            except asyncio.TimeoutError:
+                break
+            if not chunk:
+                break
+            data += chunk
+        return data
+
+    @staticmethod
+    async def read_full_client_hello(reader, data: bytes, timeout: float = 5) -> tuple[bytes, bytes]:
+        """Return ``(first_tls_record, extra_bytes)``.
+
+        Strategies rebuild TLS records from ``data[5:]`` and assume it holds exactly one
+        complete record. A ClientHello can arrive split across reads (large post-quantum
+        key shares make this common), so wait for the whole record first. Bytes received
+        after the record are returned separately and forwarded unchanged.
+        """
+        if not looks_like_tls_client_hello(data):
+            return data, b""
+        record_end = tls_record_end(data)
+        if record_end is None or record_end > MAX_CLIENT_HELLO_BYTES:
+            return data, b""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + timeout
+        while len(data) < record_end:
+            remaining = deadline - loop.time()
+            if remaining <= 0:
+                break
+            try:
+                chunk = await asyncio.wait_for(reader.read(record_end - len(data)), timeout=remaining)
+            except asyncio.TimeoutError:
+                break
+            if not chunk:
+                break
+            data += chunk
+        if len(data) <= record_end:
+            return data, b""
+        return data[:record_end], data[record_end:]
+
+    async def send_with_strategy(self, strategy_name: str, writer, hello: bytes, extra: bytes = b"") -> None:
+        await self.ctx.strategy_funcs[strategy_name](writer, hello)
+        if extra:
+            writer.write(extra)
+            await writer.drain()
 
     async def tunnel_plain(self, client_reader, client_writer, server_reader, server_writer):
         async def client_to_server():
@@ -246,6 +311,7 @@ class ProxyEngine:
         server_writer = None
         conn_id = None
         try:
+            initial_data = await self.read_request_head(client_reader, initial_data)
             target = parse_http_forward_target(initial_data)
             if not target:
                 return
@@ -292,8 +358,8 @@ class ProxyEngine:
             if not data:
                 return
 
-            first_line = data.split(b"\n")[0]
-            if b"CONNECT" not in first_line:
+            first_line = data.split(b"\n")[0].rstrip(b"\r")
+            if first_line.split(b" ", 1)[0].upper() != b"CONNECT":
                 await self.handle_http_forward(data, reader, writer)
                 return
 
@@ -321,7 +387,7 @@ class ProxyEngine:
             bypass_ip = self.ctx.get_bypass_ip(target_host) if should_bypass else None
 
             if should_bypass and bypass_ip == target_lower:
-                loop = asyncio.get_event_loop()
+                loop = asyncio.get_running_loop()
                 try:
                     ips = await loop.run_in_executor(None, self.ctx.resolve_domain_doh, target_lower)
                     if ips:
@@ -390,6 +456,7 @@ class ProxyEngine:
                 return
             if not first_chunk:
                 return
+            first_chunk, extra_chunk = await self.read_full_client_hello(reader, first_chunk)
 
             strategies = self.ctx.strategy_cache.get_strategy_order(site_name, is_main=is_main)
             site_data = self.ctx.strategy_cache._get_site_data(site_name)
@@ -430,7 +497,7 @@ class ProxyEngine:
 
                         start_t = time.perf_counter()
                         try:
-                            await self.ctx.strategy_funcs[strat_name](server_writer, first_chunk)
+                            await self.send_with_strategy(strat_name, server_writer, first_chunk, extra_chunk)
                         except Exception as e:
                             self.ctx.logger.info(f"[STRATEGY] {site_name}: {strat_name} failed ({e}) IP:{try_ip}")
                             close_writer(server_writer)
@@ -453,9 +520,9 @@ class ProxyEngine:
                             )
                             if not server_reply:
                                 raise ConnectionError("Empty response")
-                            if len(server_reply) >= 2 and server_reply[0] == 0x15:
+                            if server_reply[0] == 0x15:
                                 raise ConnectionError("TLS Alert")
-                            if len(server_reply) >= 3 and server_reply[0] != 0x16:
+                            if server_reply[0] != 0x16:
                                 raise ConnectionError("Invalid TLS response")
                         except (asyncio.TimeoutError, ConnectionError, OSError) as e:
                             self.ctx.logger.info(f"[STRATEGY] {site_name}: {strat_name} failed ({e}) IP:{try_ip}")
@@ -516,7 +583,7 @@ class ProxyEngine:
                         break
                     start_t = time.perf_counter()
                     try:
-                        await self.ctx.strategy_funcs[fallback_strat](server_writer_h, first_chunk)
+                        await self.send_with_strategy(fallback_strat, server_writer_h, first_chunk, extra_chunk)
                         server_reply = await asyncio.wait_for(server_reader_h.read(8192), timeout=8)
                         if server_reply and len(server_reply) >= 1 and server_reply[0] == 0x16:
                             elapsed_ms = (time.perf_counter() - start_t) * 1000
@@ -529,6 +596,9 @@ class ProxyEngine:
                                 "ms": round(elapsed_ms),
                                 "success": True,
                             })
+                            if site_name in self.ctx.site_stats:
+                                self.ctx.site_stats[site_name]["successes"] += 1
+                                self.ctx.site_stats[site_name]["total_ms"] += elapsed_ms
                             self.ctx.logger.info(f"[FALLBACK] {target_host}: {fallback_strat} success ({elapsed_ms:.0f}ms)")
                             self.ctx.record_privacy_event(
                                 target_host,

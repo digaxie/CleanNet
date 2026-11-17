@@ -262,5 +262,73 @@ class ProxyEngineTests(unittest.IsolatedAsyncioTestCase):
         )
 
 
+class _ChunkReader:
+    """Reader that returns pre-split chunks, simulating TCP segmentation."""
+
+    def __init__(self, *chunks):
+        self.chunks = list(chunks)
+
+    async def read(self, _size):
+        return self.chunks.pop(0) if self.chunks else b""
+
+
+def _client_hello(body_len):
+    body = b"\x01" + b"x" * (body_len - 1)
+    return b"\x16\x03\x01" + body_len.to_bytes(2, "big") + body
+
+
+class ProxyEngineReadTests(unittest.IsolatedAsyncioTestCase):
+    async def test_read_full_client_hello_waits_for_split_record(self):
+        # Regression: strategies only received the first TCP read of a split ClientHello,
+        # then rebuilt TLS records from the partial bytes and corrupted the handshake.
+        hello = _client_hello(600)
+        reader = _ChunkReader(hello[200:400], hello[400:])
+
+        record, extra = await ProxyEngine.read_full_client_hello(reader, hello[:200])
+
+        self.assertEqual(record, hello)
+        self.assertEqual(extra, b"")
+
+    async def test_read_full_client_hello_separates_trailing_bytes(self):
+        hello = _client_hello(64)
+        trailing = b"\x17\x03\x03\x00\x01z"
+
+        record, extra = await ProxyEngine.read_full_client_hello(_ChunkReader(), hello + trailing)
+
+        self.assertEqual(record, hello)
+        self.assertEqual(extra, trailing)
+
+    async def test_read_full_client_hello_passes_non_tls_through(self):
+        record, extra = await ProxyEngine.read_full_client_hello(_ChunkReader(b"more"), b"GET / HTTP/1.1")
+
+        self.assertEqual(record, b"GET / HTTP/1.1")
+        self.assertEqual(extra, b"")
+
+    async def test_read_request_head_collects_split_headers(self):
+        reader = _ChunkReader(b"Cookie: " + b"a" * 5000 + b"\r\n", b"\r\n")
+
+        head = await ProxyEngine.read_request_head(reader, b"GET http://example.com/ HTTP/1.1\r\n")
+
+        self.assertTrue(head.endswith(b"\r\n\r\n"))
+        self.assertIn(b"a" * 5000, head)
+
+    async def test_get_request_mentioning_connect_is_not_treated_as_tunnel(self):
+        calls = []
+
+        async def open_connection(host, port):
+            calls.append((host, port))
+            return _Reader(), _Writer()
+
+        context = ProxyEngineTests._context(None, open_connection=open_connection)
+        engine = ProxyEngine(context)
+
+        await engine.handle_proxy_client(
+            _Reader(b"GET http://example.com/CONNECT HTTP/1.1\r\nHost: example.com\r\n\r\n"),
+            _Writer(),
+        )
+
+        self.assertEqual(calls, [("example.com", 80)])
+
+
 if __name__ == "__main__":
     unittest.main()
