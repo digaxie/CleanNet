@@ -202,7 +202,7 @@ class TrainingManager:
             except Exception:
                 return
 
-        strat_list = list(self.ctx.strategy_funcs.keys())
+        strat_list = [s for s in self.ctx.strategy_order if s in self.ctx.strategy_funcs]
         total = len(strat_list)
         results = []
         self.ctx.training_state["progress"][site_name] = {

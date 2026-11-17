@@ -78,6 +78,50 @@ def _sni_split_point(data):
     return None
 
 
+def _is_tls_handshake(data):
+    return len(data) > 5 and data[0] == 0x16 and data[1] == 0x03
+
+
+def _sni_hostname_range(data):
+    """Absolute ``(start, end)`` offsets of the SNI hostname bytes, or None."""
+    sni_off = _find_sni_offset(data)
+    if not sni_off or sni_off + 9 > len(data):
+        return None
+    name_len = int.from_bytes(data[sni_off+7:sni_off+9], 'big')
+    start = sni_off + 9
+    end = start + name_len
+    if not 0 < name_len < 500 or end > len(data):
+        return None
+    return start, end
+
+
+def _build_tls_records(content_type, tls_version, payload, cuts):
+    """Cut ``payload`` at the given offsets and wrap each piece in its own TLS record.
+
+    Only the record framing changes; the handshake bytes the server reassembles are
+    identical to the client's, so the TLS transcript (and therefore Finished) still
+    matches. Strategies must never alter the ClientHello content itself.
+    """
+    records = []
+    prev = 0
+    for cut in sorted(set(cuts)) + [len(payload)]:
+        if cut <= prev or cut > len(payload):
+            continue
+        frag = payload[prev:cut]
+        records.append(bytes([content_type]) + tls_version + len(frag).to_bytes(2, 'big') + frag)
+        prev = cut
+    return records
+
+
+def _enable_nodelay(writer):
+    sock = writer.transport.get_extra_info('socket') if getattr(writer, "transport", None) else None
+    if sock:
+        try:
+            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+        except Exception:
+            pass
+
+
 class StrategySet:
     def __init__(self, context: StrategyRuntimeContext):
         self.ctx = context
@@ -733,6 +777,103 @@ class StrategySet:
             writer.write(data)
             await writer.drain()
 
+    async def strategy_sni_multi_record(self, writer, data):
+        """Spread the SNI hostname over many tiny TLS records (3 hostname bytes each).
+
+        sni_split_byte cuts the name at one point; DPI that reassembles two records
+        still sees the full name. Here no single record holds more than 3 bytes of it.
+        """
+        if not _is_tls_handshake(data):
+            writer.write(data)
+            await writer.drain()
+            return
+        payload = data[5:]
+        name = _sni_hostname_range(data)
+        if name:
+            start, end = name[0] - 5, name[1] - 5
+            cuts = [start] + list(range(start + 3, end, 3)) + [end]
+        else:
+            cuts = [max(1, min(len(payload) // 2, 50))]
+        records = _build_tls_records(data[0], data[1:3], payload, cuts)
+        for rec in records:
+            writer.write(rec)
+            await writer.drain()
+        self.ctx.record_fragments(max(1, len(records) - 1))
+
+    async def strategy_sni_tcp_drip(self, writer, data):
+        """Send only the SNI hostname as tiny TCP segments, everything else in bulk.
+
+        slow_drip drips the first 10 bytes (the record header); this drips the part
+        DPI actually matches on, 2 bytes per segment, without touching TLS framing.
+        """
+        name = _sni_hostname_range(data) if _is_tls_handshake(data) else None
+        if not name:
+            writer.write(data)
+            await writer.drain()
+            return
+        _enable_nodelay(writer)
+        start, end = name
+        writer.write(data[:start])
+        await writer.drain()
+        await self.ctx.sleep(0.003)
+        for i in range(start, end, 2):
+            writer.write(data[i:min(i + 2, end)])
+            await writer.drain()
+            await self.ctx.sleep(0.002)
+        writer.write(data[end:])
+        await writer.drain()
+        self.ctx.record_fragments(1)
+
+    async def strategy_tls_record_tcp_split(self, writer, data):
+        """Split at the SNI on both layers: two TLS records, each cut across TCP segments.
+
+        Targets DPI that reassembles either TCP segments or TLS records but not both.
+        """
+        if not _is_tls_handshake(data):
+            writer.write(data)
+            await writer.drain()
+            return
+        _enable_nodelay(writer)
+        payload = data[5:]
+        split_at = _sni_split_point(data) or min(len(payload) // 2, 50)
+        split_at = max(1, min(split_at, len(payload) - 1))
+        rec1, rec2 = _build_tls_records(data[0], data[1:3], payload, [split_at])
+        # Record 1: header and body in separate segments.
+        writer.write(rec1[:5])
+        await writer.drain()
+        await self.ctx.sleep(0.005)
+        writer.write(rec1[5:])
+        await writer.drain()
+        await self.ctx.sleep(0.01)
+        # Record 2: cut through the middle of its body.
+        mid = 5 + max(1, (len(rec2) - 5) // 2)
+        writer.write(rec2[:mid])
+        await writer.drain()
+        await self.ctx.sleep(0.005)
+        writer.write(rec2[mid:])
+        await writer.drain()
+        self.ctx.record_fragments(2)
+
+    async def strategy_tls_record_long_delay(self, writer, data):
+        """Two TLS records split at the SNI with a 300 ms pause in between.
+
+        Some DPI keeps per-flow reassembly state only briefly; the existing delay
+        strategies pause at most 50 ms between fragments.
+        """
+        if not _is_tls_handshake(data):
+            writer.write(data)
+            await writer.drain()
+            return
+        payload = data[5:]
+        split_at = _sni_split_point(data) or min(len(payload) // 2, 50)
+        split_at = max(1, min(split_at, len(payload) - 1))
+        rec1, rec2 = _build_tls_records(data[0], data[1:3], payload, [split_at])
+        writer.write(rec1)
+        await writer.drain()
+        await self.ctx.sleep(0.3)
+        writer.write(rec2)
+        await writer.drain()
+        self.ctx.record_fragments(1)
 
     def functions(self) -> dict[str, Callable[[Writer, bytes], Awaitable[None]]]:
         return {
@@ -761,6 +902,10 @@ class StrategySet:
             "tls_random_pad_frag": self.strategy_tls_random_pad_frag,
             "tls_interleaved_ccs": self.strategy_tls_interleaved_ccs,
             "tcp_window_frag": self.strategy_tcp_window_frag,
+            "sni_multi_record": self.strategy_sni_multi_record,
+            "sni_tcp_drip": self.strategy_sni_tcp_drip,
+            "tls_record_tcp_split": self.strategy_tls_record_tcp_split,
+            "tls_record_long_delay": self.strategy_tls_record_long_delay,
         }
 
 

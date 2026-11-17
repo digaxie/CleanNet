@@ -14,6 +14,8 @@ from typing import Any, Callable, Iterable
 
 from .config import atomic_write_json
 from .strategy_catalog import (
+    AUTO_STRATEGY_ORDER,
+    RETIRED_STRATEGIES,
     STRATEGY_GROUPS,
     STRATEGY_ORDER,
     STRATEGY_TO_GROUP,
@@ -148,10 +150,11 @@ class StrategyCache:
         result: list[str] = []
         cooldown_strats: list[str] = []
 
-        if sd["best_strategy"] and sd["best_strategy"] in self.strategy_names:
-            result.append(sd["best_strategy"])
+        best = sd["best_strategy"]
+        if best and best in self.strategy_names and best not in RETIRED_STRATEGIES:
+            result.append(best)
 
-        for strat in STRATEGY_ORDER:
+        for strat in AUTO_STRATEGY_ORDER:
             if strat in result:
                 continue
             if not is_main:
@@ -679,7 +682,7 @@ class AdaptiveStrategyEngine:
         scores = []
         nn = self._get_nn(site_name)
 
-        for strat in STRATEGY_ORDER:
+        for strat in AUTO_STRATEGY_ORDER:
             linear_score, confidence = self._score_strategy_linear(site_ai, strat, hour, day, current_time)
             nn_score = 0.5
             try:
@@ -699,7 +702,7 @@ class AdaptiveStrategyEngine:
 
         if len(scores) > 1 and count_as_prediction:
             linear_top = max(
-                STRATEGY_ORDER,
+                AUTO_STRATEGY_ORDER,
                 key=lambda s: self._score_strategy_linear(site_ai, s, hour, day, current_time)[0],
             )
             if scores[0][0] != linear_top:

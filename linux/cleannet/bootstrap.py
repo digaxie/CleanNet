@@ -31,7 +31,7 @@ from .runtime import RuntimeState
 from .settings import AppPaths, RuntimeSettings, build_app_paths, build_runtime_settings
 from .stats import load_stats_file, save_stats_file
 from .strategies import StrategyRuntimeContext, build_strategy_funcs
-from .strategy_catalog import AI_TRAIN_PROFILES, STRATEGY_ORDER
+from .strategy_catalog import AI_TRAIN_PROFILES, AUTO_STRATEGY_ORDER, STRATEGY_ORDER
 from .training import TrainingManager, TrainingRuntimeContext
 from .tray import TRAY_AVAILABLE, TrayManager, TrayRuntimeContext
 from .os_integration import (
@@ -396,7 +396,7 @@ class CleanNetRuntime:
             ai_engine=self.ai_engine,
             strategy_cache=self.strategy_cache,
             strategy_funcs=self.strategy_funcs,
-            strategy_order=STRATEGY_ORDER,
+            strategy_order=AUTO_STRATEGY_ORDER,
             ai_train_profiles=AI_TRAIN_PROFILES,
             ai_min_samples=self.settings.ai_min_samples,
             get_bypass_ip=self.get_bypass_ip,
