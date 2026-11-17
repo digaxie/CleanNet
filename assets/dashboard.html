@@ -720,6 +720,16 @@ Object.assign(I.de,{
 let L=localStorage.getItem('cleannet_lang')||navigator.language.slice(0,2);
 if(!I[L])L='en';
 function setLang(l){L=l;localStorage.setItem('cleannet_lang',l);applyLang()}
+Object.assign(I.en,{verify_verified:'Verified',verify_unverified:'Handshake OK',verify_intercepted:'DPI intercepted',verify_rejected:'Browser rejected',verify_failed:'Check failed',verify_title:'Last TLS verification',verified_count:'verified',intercepted_count:'intercepted by DPI',rejections:'Rejected'});
+Object.assign(I.tr,{verify_verified:'Dogrulandi',verify_unverified:'El sikisma OK',verify_intercepted:'DPI mudahalesi',verify_rejected:'Tarayici reddetti',verify_failed:'Kontrol basarisiz',verify_title:'Son TLS dogrulamasi',verified_count:'dogrulandi',intercepted_count:'DPI tarafindan yakalandi',rejections:'Reddedilen'});
+Object.assign(I.de,{verify_verified:'Verifiziert',verify_unverified:'Handshake OK',verify_intercepted:'DPI-Eingriff',verify_rejected:'Browser abgelehnt',verify_failed:'Pruefung fehlgeschlagen',verify_title:'Letzte TLS-Pruefung',verified_count:'verifiziert',intercepted_count:'von DPI abgefangen',rejections:'Abgelehnt'});
+function verifyBadge(v){
+  if(!v||!v.last)return '';
+  const st=(v.intercepted_recently&&v.last.status!=='verified')?'intercepted':v.last.status;
+  const col={verified:'var(--green)',unverified:'var(--cyan)',intercepted:'var(--red)',rejected:'var(--orange)'}[st]||'var(--text3)';
+  const tip=t('verify_title')+': '+(v.last.strategy?v.last.strategy+' - ':'')+(v.last.detail||st)+' ['+(v.last.source||'')+']';
+  return '<span style="font-size:8px;color:'+col+';background:'+col+'15;padding:1px 6px;border-radius:8px;" title="'+escA(tip)+'">'+esc(t('verify_'+st))+'</span>';
+}
 function t(k){return I[L][k]||I.en[k]||k}
 function pColor(st){
   if(st==='hidden')return 'var(--green)';
@@ -829,6 +839,7 @@ function U(d){try{
         +'<span style="font-size:9px;color:'+stCol+';font-weight:700;background:'+stCol+'15;padding:2px 8px;border-radius:10px;">['+strat+']</span>'
         +(si.strategy_time_ms?'<span style="font-size:9px;color:var(--text3)">'+si.strategy_time_ms+'ms</span>':'')
         +(si.ai&&si.ai.ai_active?'<span style="font-size:8px;color:var(--purple);background:var(--purple)15;padding:1px 6px;border-radius:8px;" title="'+t('ai_confidence_title')+': '+Math.round(si.ai.confidence*100)+'%">AI '+Math.round(si.ai.confidence*100)+'%</span>':'')
+        +verifyBadge(si.verification)
         +'<span style="margin-left:auto;display:flex;gap:4px;align-items:center;">'
         +testHtml
         +'<span onclick="removeSite(\''+jsArg(s)+'\')" title="'+t('remove_site')+'" style="cursor:pointer;color:var(--red);opacity:.35;transition:opacity .2s;display:flex;padding:2px;" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.35"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/></svg></span>'
@@ -838,7 +849,7 @@ function U(d){try{
         +'<span>'+t('conn')+': <b style="color:#fff">'+cc+'</b></span>'
         +'<span>'+t('success')+': <b style="color:var(--green)">'+sc+'</b></span>'
         +'<span>'+t('fail')+': <b style="color:var(--red)">'+fc+'</b></span>'
-        +(am?'<span>'+t('avg')+': <b style="color:var(--accent)">'+am+'ms</b></span>':'')
+        +(am?'<span>'+t('avg')+': <b style="color:var(--accent)">'+am+'ms</b></span>':'')+(si.rejections?'<span>'+t('rejections')+': <b style="color:var(--orange)">'+si.rejections+'</b></span>':'')
         +(cc>0?'<span style="font-weight:700;color:'+(rate>70?'var(--green)':rate>30?'var(--orange)':'var(--red)')+'">'+rate+'%</span>':'')
         +'</div>'
         +(pv?'<div class="privacy-strip">'
@@ -1639,8 +1650,9 @@ async function pollTraining(){
         const canRevert=d.previous_strategies&&d.previous_strategies[s]!==undefined;
         rh+='<div style="background:var(--surface2);border-radius:8px;padding:10px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:8px;">';
         rh+='<div><span style="color:#fff;font-weight:600;font-size:11px;">'+esc(s)+'</span><br>';
-        if(rs.best_strategy){rh+='<span style="color:var(--green);font-size:10px;font-weight:700;">'+esc(rs.best_strategy)+'</span> <span style="color:var(--text3);font-size:9px;">'+rs.best_ms+'ms ('+rs.success_count+'/'+rs.total_tested+')</span>';}
+        if(rs.best_strategy){rh+='<span style="color:var(--green);font-size:10px;font-weight:700;">'+esc(rs.best_strategy)+'</span> <span style="color:var(--text3);font-size:9px;">'+rs.best_ms+'ms ('+rs.success_count+'/'+rs.total_tested+')</span>'+(rs.verified_count?' <span style="color:var(--green);font-size:9px;">'+rs.verified_count+' '+t('verified_count')+'</span>':'');}
         else{rh+='<span style="color:var(--red);font-size:10px;">'+t('no_improvement')+'</span>';}
+        if(rs.intercepted_count){rh+=' <span style="color:var(--red);font-size:9px;">'+rs.intercepted_count+' '+t('intercepted_count')+'</span>';}
         rh+='</div><div style="display:flex;gap:4px;">';
         if(rs.best_strategy){rh+='<button class="btn btn-sm btn-green" onclick="applyTraining(\''+jsArg(s)+'\')">'+t('apply_strategy')+'</button>';}
         if(canRevert){rh+='<button class="btn btn-sm btn-red" onclick="revertTraining(\''+jsArg(s)+'\')">'+t('revert_strategy')+'</button>';}

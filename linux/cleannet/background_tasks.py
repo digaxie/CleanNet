@@ -11,6 +11,7 @@ import time
 from typing import Any, Awaitable, Callable
 
 from .proxy_engine import open_connection_dual_stack
+from .tls_probe import STATUS_VERIFIED, classify_tls_error
 
 
 Reader = Any
@@ -69,6 +70,8 @@ class BackgroundTaskContext:
     site_tester: Callable[[str, int, str], None] = default_site_tester
     create_task: Callable[[Awaitable[Any]], Any] = asyncio.create_task
     proxy_watch_interval: int = 5
+    # (site, status, strategy=..., detail=..., source=...) -> None
+    record_verification: Callable[..., None] = lambda *_args, **_kwargs: None
 
 
 class BackgroundTaskManager:
@@ -128,15 +131,21 @@ class BackgroundTaskManager:
                 timeout=20,
             )
             elapsed = round((self.ctx.perf_counter() - start) * 1000)
-            result = {"status": "ok", "ms": elapsed, "time": self.ctx.now_iso()}
+            result = {"status": "ok", "ms": elapsed, "time": self.ctx.now_iso(), "verification": STATUS_VERIFIED}
+            self.ctx.record_verification(site_name, STATUS_VERIFIED, detail="site test: certificate valid", source="test")
         except Exception as e:
             elapsed = round((self.ctx.perf_counter() - start) * 1000)
+            verification = classify_tls_error(e)
             result = {
                 "status": "fail",
                 "ms": elapsed,
                 "time": self.ctx.now_iso(),
-                "error": str(e)[:50],
+                "error": str(e)[:80],
+                "verification": verification,
             }
+            if verification == "intercepted":
+                result["error"] = "DPI interception: certificate for another host"
+            self.ctx.record_verification(site_name, verification, detail=result["error"], source="test")
 
         self.ctx.test_results[site_name] = result
         self.ctx.logger.info(f"[TEST] {site_name}: {result['status']} ({result.get('ms', 0)}ms)")

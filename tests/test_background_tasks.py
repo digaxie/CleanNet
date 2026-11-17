@@ -1,3 +1,4 @@
+import ssl
 import unittest
 
 from cleannet.background_tasks import BackgroundTaskContext, BackgroundTaskManager
@@ -214,6 +215,76 @@ class BackgroundTaskTests(unittest.IsolatedAsyncioTestCase):
         await manager.proxy_ownership_loop()
 
         self.assertEqual(repairs["count"], 0)
+
+
+
+class SiteTestVerificationTests(unittest.IsolatedAsyncioTestCase):
+    async def test_hostname_mismatch_is_reported_as_interception(self):
+        verifications = []
+
+        def tester(_host, _port, _domain):
+            exc = ssl.SSLCertVerificationError("hostname mismatch")
+            exc.verify_code = 62
+            raise exc
+
+        ctx = _site_test_context(tester, verifications)
+        result = await BackgroundTaskManager(ctx).test_site_connection("discord")
+
+        self.assertEqual(result["status"], "fail")
+        self.assertEqual(result["verification"], "intercepted")
+        self.assertIn("DPI interception", result["error"])
+        self.assertEqual(verifications, [("discord", "intercepted", "test")])
+
+    async def test_successful_site_test_is_verified(self):
+        verifications = []
+        ctx = _site_test_context(lambda *_args: None, verifications)
+
+        result = await BackgroundTaskManager(ctx).test_site_connection("discord")
+
+        self.assertEqual(result["status"], "ok")
+        self.assertEqual(result["verification"], "verified")
+        self.assertEqual(verifications, [("discord", "verified", "test")])
+
+
+def _site_test_context(tester, verifications):
+    async def no_sleep(_seconds):
+        pass
+
+    async def resolve():
+        return True
+
+    return BackgroundTaskContext(
+        logger=_SiteTestLogger(),
+        get_config=lambda: {"sites": {"discord": {"domains": ["discord.com"]}}},
+        get_running=lambda: True,
+        set_ping_ms=lambda _v: None,
+        ping_history=[],
+        test_results={},
+        get_bypass_ips=lambda: [],
+        get_bypass_domains=lambda: [],
+        local_host="127.0.0.1",
+        local_port=8080,
+        health_check_interval=60,
+        ip_update_interval=300,
+        ping_target_host="1.1.1.1",
+        strategy_retest_interval=60,
+        resolve_bypass_ips=resolve,
+        notify=lambda *_a: None,
+        strategy_cache=None,
+        save_stats=lambda: None,
+        ensure_proxy_enabled=None,
+        parse_iso=lambda _v: None,
+        now_iso=lambda: "2026-01-01T00:00:00",
+        sleep=no_sleep,
+        site_tester=tester,
+        create_task=lambda coro: coro.close(),
+        record_verification=lambda site, status, **kw: verifications.append((site, status, kw["source"])),
+    )
+
+
+class _SiteTestLogger:
+    def info(self, *_a, **_k):
+        pass
 
 
 if __name__ == "__main__":

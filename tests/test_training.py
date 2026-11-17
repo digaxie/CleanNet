@@ -1,5 +1,6 @@
 import unittest
 
+from cleannet.tls_probe import ProbeResult
 from cleannet.training import TrainingManager, TrainingRuntimeContext, build_client_hello
 
 
@@ -146,21 +147,74 @@ class TrainingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b"example.com", hello)
         self.assertEqual(hello[5], 0x01)
 
-    async def test_probe_strategy_uses_connection_and_strategy(self):
+    async def test_probe_strategy_runs_verified_probe(self):
         calls = []
 
         async def open_connection(host, port):
-            calls.append((host, port))
-            return _Reader(b"\x16\x03\x03"), _Writer()
+            return _Reader(), _Writer()
 
-        ctx, _ai, _cache = self._context(open_connection=open_connection)
+        async def tls_probe(open_conn, strategy, host, ip):
+            calls.append((open_conn, strategy, host, ip))
+            return ProbeResult("verified", 42.0, "certificate valid")
+
+        ctx, _ai, _cache = self._context(open_connection=open_connection, tls_probe=tls_probe)
         manager = TrainingManager(ctx)
 
         success, elapsed_ms = await manager.probe_strategy("1.1.1.1", "example.com", "direct")
 
         self.assertTrue(success)
-        self.assertGreaterEqual(elapsed_ms, 0)
-        self.assertEqual(calls, [("1.1.1.1", 443)])
+        self.assertEqual(elapsed_ms, 42.0)
+        self.assertEqual(calls, [(open_connection, ctx.strategy_funcs["direct"], "example.com", "1.1.1.1")])
+
+    async def test_probe_treats_interception_as_failure(self):
+        async def tls_probe(*_args):
+            return ProbeResult("intercepted", 0.0, "certificate is for a different host")
+
+        ctx, _ai, _cache = self._context(tls_probe=tls_probe)
+
+        success, elapsed_ms = await TrainingManager(ctx).probe_strategy("1.1.1.1", "example.com", "direct")
+
+        self.assertFalse(success)
+        self.assertEqual(elapsed_ms, 0)
+
+    async def test_probe_exception_becomes_failed_result(self):
+        async def tls_probe(*_args):
+            raise RuntimeError("boom")
+
+        ctx, _ai, _cache = self._context(tls_probe=tls_probe)
+
+        result = await TrainingManager(ctx).probe("1.1.1.1", "example.com", "direct")
+
+        self.assertEqual(result.status, "failed")
+
+    async def test_train_site_records_verification_and_interceptions(self):
+        verifications = []
+
+        async def direct(writer, data):
+            writer.write(data)
+
+        async def host_split(writer, data):
+            writer.write(data)
+
+        async def tls_probe(_open, strategy, _host, _ip):
+            if strategy is direct:
+                return ProbeResult("intercepted", 0.0, "other host")
+            return ProbeResult("verified", 30.0, "ok")
+
+        ctx, _ai, _cache = self._context(
+            strategy_funcs={"direct": direct, "host_split": host_split},
+            tls_probe=tls_probe,
+            record_verification=lambda site, status, **kw: verifications.append((site, status, kw["strategy"])),
+        )
+        ctx.training_state["active"] = True
+
+        await TrainingManager(ctx).train_site("enabled")
+
+        result = ctx.training_state["results"]["enabled"]
+        self.assertEqual(result["best_strategy"], "host_split")
+        self.assertEqual(result["intercepted_count"], 1)
+        self.assertEqual(result["verified_count"], 1)
+        self.assertEqual(verifications, [("enabled", "intercepted", "direct"), ("enabled", "verified", "host_split")])
 
     async def test_train_all_sites_only_runs_enabled_sites(self):
         ctx, _ai, _cache = self._context()

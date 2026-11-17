@@ -32,6 +32,12 @@ HAPPY_EYEBALLS_DELAY = 0.25
 MAX_REQUEST_HEADER_BYTES = 64 * 1024
 MAX_CLIENT_HELLO_BYTES = 16 * 1024 + 5  # one TLS record: 2^14 payload + 5-byte header
 
+# A browser that rejects the server flight sends one alert (TLS 1.3: CCS + encrypted
+# alert, about 30 bytes) and closes. A healthy client's Finished alone exceeds this.
+CLIENT_REJECT_MAX_BYTES = 48
+CLIENT_REJECT_WINDOW = 3.0  # seconds after the tunnel starts
+STATUS_REJECTED = "rejected"
+
 
 async def open_connection_dual_stack(host, port):
     return await asyncio.open_connection(host, port, happy_eyeballs_delay=HAPPY_EYEBALLS_DELAY)
@@ -68,6 +74,8 @@ class ProxyRuntimeContext:
     blocked_domain_ttl: int
     site_max_concurrent: int
     open_connection: Callable[..., Awaitable[tuple[Reader, Writer]]] = open_connection_dual_stack
+    # (site, status, strategy=..., detail=..., source=...) -> None
+    record_verification: Callable[..., None] = lambda *_args, **_kwargs: None
 
 
 def close_writer(writer: Writer | None) -> None:
@@ -143,12 +151,17 @@ class ProxyEngine:
             await writer.drain()
 
     async def tunnel_plain(self, client_reader, client_writer, server_reader, server_writer):
+        stats = {"client_bytes": 0, "server_bytes": 0, "client_closed_first": False, "duration": 0.0}
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+
         async def client_to_server():
             try:
                 while True:
                     data = await client_reader.read(8192)
                     if not data:
                         break
+                    stats["client_bytes"] += len(data)
                     server_writer.write(data)
                     await server_writer.drain()
             except Exception:
@@ -160,15 +173,67 @@ class ProxyEngine:
                     data = await server_reader.read(8192)
                     if not data:
                         break
+                    stats["server_bytes"] += len(data)
                     client_writer.write(data)
                     await client_writer.drain()
             except Exception:
                 pass
 
         tasks = [asyncio.create_task(client_to_server()), asyncio.create_task(server_to_client())]
-        _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+        stats["client_closed_first"] = tasks[0] in done and tasks[1] not in done
+        stats["duration"] = loop.time() - started
         for task in pending:
             task.cancel()
+        return stats
+
+    @staticmethod
+    def looks_rejected_by_client(tunnel_stats: dict[str, Any] | None) -> bool:
+        """Did the browser abort the TLS handshake right after our strategy "succeeded"?
+
+        After the server's first flight a healthy client sends its Finished (TLS 1.3:
+        at least ~58 bytes, TLS 1.2: key exchange + Finished) and then application data.
+        A client that rejects the certificate (DPI interception) or cannot decrypt the
+        server flight (corrupted transcript) sends one small alert and closes at once.
+        A client that closes without sending anything is a cancelled race, not a
+        rejection.
+        """
+        if not tunnel_stats:
+            return False
+        return (
+            tunnel_stats.get("client_closed_first", False)
+            and 0 < tunnel_stats.get("client_bytes", 0) <= CLIENT_REJECT_MAX_BYTES
+            and tunnel_stats.get("duration", 99.0) <= CLIENT_REJECT_WINDOW
+        )
+
+    def record_client_rejection(self, site_name: str, strategy: str, target_host: str) -> None:
+        self.ctx.stats["client_rejections"] = self.ctx.stats.get("client_rejections", 0) + 1
+        self.ctx.strategy_cache.record_failure(site_name, strategy)
+        self.ctx.ai_engine.record(site_name, strategy, False, 0)
+        site = self.ctx.site_stats.get(site_name)
+        if site:
+            site["successes"] = max(0, site.get("successes", 0) - 1)
+            site["failures"] = site.get("failures", 0) + 1
+            site["rejections"] = site.get("rejections", 0) + 1
+        self.ctx.strategy_history.append({
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "site": site_name,
+            "strategy": strategy,
+            "ms": 0,
+            "success": False,
+            "rejected": True,
+        })
+        self.ctx.record_verification(
+            site_name,
+            STATUS_REJECTED,
+            strategy=strategy,
+            detail="browser aborted the handshake (certificate rejected or handshake corrupted)",
+            source="live",
+        )
+        self.ctx.logger.warning(
+            f"[VERIFY] {site_name}: {strategy} got a server reply but the browser rejected "
+            f"{self.ctx.hash_host(target_host)}; counted as failure"
+        )
 
     async def forward_with_sni_shield(
         self,
@@ -566,7 +631,9 @@ class ProxyEngine:
 
                         writer.write(server_reply)
                         await writer.drain()
-                        await self.tunnel_plain(reader, writer, server_reader, server_writer)
+                        tunnel_stats = await self.tunnel_plain(reader, writer, server_reader, server_writer)
+                        if self.looks_rejected_by_client(tunnel_stats):
+                            self.record_client_rejection(site_name, strat_name, target_host)
                         success = True
                         break
 
@@ -611,7 +678,9 @@ class ProxyEngine:
                             writer.write(server_reply)
                             await writer.drain()
                             server_writer = server_writer_h
-                            await self.tunnel_plain(reader, writer, server_reader_h, server_writer_h)
+                            tunnel_stats = await self.tunnel_plain(reader, writer, server_reader_h, server_writer_h)
+                            if self.looks_rejected_by_client(tunnel_stats):
+                                self.record_client_rejection(site_name, fallback_strat, target_host)
                             return
                     except Exception:
                         pass

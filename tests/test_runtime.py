@@ -1,7 +1,7 @@
 import unittest
 
 from cleannet.config import build_lists_from_config
-from cleannet.runtime import ConnectionTracker, RuntimeState
+from cleannet.runtime import ConnectionTracker, RuntimeState, VerificationTracker
 
 
 class RuntimeTests(unittest.TestCase):
@@ -74,6 +74,34 @@ class RuntimeTests(unittest.TestCase):
         self.assertEqual(state.find_site_for_host("new.example"), "new")
         self.assertEqual(state.domain_ips, {})
         self.assertEqual(state.dns_privacy_cache, {})
+
+
+
+class VerificationTrackerTests(unittest.TestCase):
+    def test_tracks_last_success_and_recent_interception(self):
+        now = {"t": 1000.0}
+        tracker = VerificationTracker(time_func=lambda: now["t"])
+
+        tracker.record("discord", "verified", strategy="tls_record_frag", source="probe")
+        tracker.record("discord", "intercepted", strategy="direct", source="probe")
+        snap = tracker.snapshot("discord")
+
+        self.assertEqual(snap["last"]["status"], "intercepted")
+        self.assertEqual(snap["last_success"]["strategy"], "tls_record_frag")
+        self.assertTrue(snap["intercepted_recently"])
+        self.assertEqual(snap["counts"], {"verified": 1, "intercepted": 1})
+
+        now["t"] += VerificationTracker.INTERCEPT_WINDOW + 1
+        self.assertFalse(tracker.snapshot("discord")["intercepted_recently"])
+
+    def test_unknown_site_and_clear(self):
+        tracker = VerificationTracker()
+        self.assertIsNone(tracker.snapshot("x"))
+
+        tracker.record("x", "failed")
+        tracker.clear("x")
+
+        self.assertIsNone(tracker.snapshot("x"))
 
 
 if __name__ == "__main__":

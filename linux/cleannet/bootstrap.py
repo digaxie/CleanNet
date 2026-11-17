@@ -486,6 +486,7 @@ class CleanNetRuntime:
             local_port=self.settings.local_port,
             strategy_names=list(STRATEGY_ORDER),
             web_port=self.settings.web_port,
+            get_verification=self.state.verification.snapshot,
         )
 
     def force_save_runtime_state(self) -> None:

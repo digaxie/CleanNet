@@ -11,8 +11,31 @@ def build_strategy_recommendations(
     ai_stats: dict[str, Any] | None,
     strategy_history: list[dict[str, Any]],
     active_connections: list[dict[str, Any]],
+    verification: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     recommendations: list[dict[str, Any]] = []
+
+    # Verification problems are the most actionable signal, so they go first.
+    for site_name, snap in (verification or {}).items():
+        if not snap or site_name not in sites:
+            continue
+        last = snap.get("last") or {}
+        if snap.get("intercepted_recently") and last.get("status") != "verified":
+            recommendations.append({
+                "level": "critical",
+                "site": site_name,
+                "title": "DPI interception detected",
+                "detail": "The network answered with a certificate for another host. Run AI training "
+                          "to find a strategy that passes verification.",
+            })
+        elif last.get("status") == "rejected":
+            recommendations.append({
+                "level": "warning",
+                "site": site_name,
+                "title": "Browser rejected a bypassed connection",
+                "detail": f"{last.get('strategy') or 'A strategy'} got a server reply but the handshake "
+                          "failed in the browser; it is now counted as a failure.",
+            })
 
     for site_name, site in sites.items():
         stats = site_stats.get(site_name, {})

@@ -86,6 +86,7 @@ class DashboardRuntimeContext:
     local_port: int
     strategy_names: list[str]
     web_port: int = 8888
+    get_verification: Callable[[str], dict[str, Any] | None] = lambda _site: None
 
 
 LOCAL_DASHBOARD_HOSTS = {"127.0.0.1", "localhost", "::1"}
@@ -340,12 +341,14 @@ class DashboardServer:
             ai_intensity,
             self.ctx.ai_train_profiles["light"],
         )
+        verification = {name: self.ctx.get_verification(name) for name in config.get("sites", {})}
         strategy_recommendations = build_strategy_recommendations(
             config.get("sites", {}),
             self.ctx.site_stats,
             ai_stats,
             list(self.ctx.strategy_history),
             active_connections,
+            verification=verification,
         )
         for site_name, site_info in config.get("sites", {}).items():
             strat_info = self.ctx.strategy_cache.get_site_strategy_info(site_name)
@@ -369,6 +372,8 @@ class DashboardServer:
                 "test": self.ctx.test_results.get(site_name),
                 "ai": ai_insights,
                 "privacy": self.ctx.site_privacy_state.get(site_name),
+                "verification": verification.get(site_name),
+                "rejections": ss.get("rejections", 0),
             }
 
         start_time = self.ctx.get_start_time()
@@ -393,6 +398,7 @@ class DashboardServer:
             "ip_updates": self.ctx.stats["ip_updates"],
             "strategy_tries": self.ctx.stats["strategy_tries"],
             "strategy_fallbacks": self.ctx.stats["strategy_fallbacks"],
+            "client_rejections": self.ctx.stats.get("client_rejections", 0),
             "ips": list(self.ctx.get_bypass_ips()),
             "sites": site_data,
             "proxy_bypass": config.get("proxy_bypass", []),

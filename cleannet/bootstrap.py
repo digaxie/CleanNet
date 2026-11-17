@@ -392,6 +392,7 @@ class CleanNetRuntime:
             parse_iso=_parse_iso,
             now_iso=lambda: datetime.now().isoformat(timespec="seconds"),
             should_manage_proxy=self.should_manage_proxy,
+            record_verification=self.state.verification.record,
         )
 
     def build_training_context(self) -> TrainingRuntimeContext:
@@ -412,6 +413,7 @@ class CleanNetRuntime:
             get_bypass_ip=self.get_bypass_ip,
             resolve_domain_doh=self.resolve_domain_doh,
             hash_host=self.hash_host,
+            record_verification=self.state.verification.record,
         )
 
     def build_proxy_context(self) -> ProxyRuntimeContext:
@@ -444,6 +446,7 @@ class CleanNetRuntime:
             strategy_success_timeout=self.settings.strategy_success_timeout,
             blocked_domain_ttl=self.settings.blocked_domain_ttl,
             site_max_concurrent=self.settings.site_max_concurrent,
+            record_verification=self.state.verification.record,
         )
 
     def set_ai_train_intensity(self, value: str) -> None:
@@ -496,6 +499,7 @@ class CleanNetRuntime:
             local_port=self.settings.local_port,
             strategy_names=list(STRATEGY_ORDER),
             web_port=self.settings.web_port,
+            get_verification=self.state.verification.snapshot,
         )
 
     def force_save_runtime_state(self) -> None:
