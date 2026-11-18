@@ -4,6 +4,16 @@ System Tray + Web Dashboard + DoH DNS + Health Check + Logging
 Configurable site bypass system via config.json
 """
 
+import sys
+
+from cleannet.uninstall_cleanup import CLEANUP_FLAG, RESTORE_PROXY_FLAG, run_cleanup
+
+# Run by the installer and uninstaller: undo CleanNet's Windows settings, start nothing.
+if CLEANUP_FLAG in sys.argv[1:]:
+    sys.exit(run_cleanup(__file__, remove_autostart=True))
+if RESTORE_PROXY_FLAG in sys.argv[1:]:
+    sys.exit(run_cleanup(__file__, remove_autostart=False))
+
 from cleannet.bootstrap import create_app
 
 

@@ -63,7 +63,7 @@ Source: "..\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\VERSION"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\CHANGELOG.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "SETUP_INFO.txt"; DestDir: "{app}"; Flags: ignoreversion
-Source: "default-config.installed.json"; DestDir: "{localappdata}\CleanNet"; DestName: "config.json"; Flags: ignoreversion onlyifdoesntexist
+Source: "default-config.installed.json"; DestDir: "{localappdata}\CleanNet"; DestName: "config.json"; Flags: onlyifdoesntexist uninsneveruninstall
 
 [Icons]
 Name: "{group}\CleanNet"; Filename: "{app}\{#MyAppExeName}"
@@ -71,23 +71,106 @@ Name: "{group}\CleanNet README"; Filename: "{app}\README.md"
 Name: "{autodesktop}\CleanNet"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "{cm:launchCleanNet}"; Flags: nowait postinstall skipifsilent unchecked
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:launchCleanNet}"; Flags: nowait postinstall skipifsilent unchecked; Check: not CleanNetWasRunning
 
 [Code]
-procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+const
+  InternetSettingsKey = 'Software\Microsoft\Windows\CurrentVersion\Internet Settings';
+  RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
+  AutostartValue = 'CleanNetDPIBypass';
+
+var
+  WasRunning: Boolean;
+  CleanupDone: Boolean;
+
+function CleanNetWasRunning: Boolean;
+begin
+  Result := WasRunning;
+end;
+
+{ Stops the CleanNet that runs from ExePath (a portable copy elsewhere is left alone).
+  Returns True when one was running. }
+function StopCleanNet(const ExePath: String): Boolean;
+var
+  QuotedPath, Params: String;
+  ResultCode: Integer;
+begin
+  Result := False;
+  if not FileExists(ExePath) then
+    exit;
+  QuotedPath := ExePath;
+  StringChangeEx(QuotedPath, '''', '''''', True);
+  Params := '-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "' +
+    '$p = @(Get-Process -Name CleanNet -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq ''' + QuotedPath + ''' }); ' +
+    'if ($p.Count -eq 0) { exit 0 }; ' +
+    '$p | Stop-Process -Force -ErrorAction SilentlyContinue; ' +
+    '$p | Wait-Process -Timeout 15 -ErrorAction SilentlyContinue; exit 10"';
+  // Setup is 32-bit; the 32-bit PowerShell cannot read the path of a 64-bit process.
+  if Exec(ExpandConstant('{sysnative}\WindowsPowerShell\v1.0\powershell.exe'), Params, '', SW_HIDE,
+    ewWaitUntilTerminated, ResultCode) then
+    Result := ResultCode = 10;
+end;
+
+{ Runs the installed CleanNet with --cleanup or --restore-proxy and waits for it. }
+function RunCleanNetCleanup(const Flag: String): Boolean;
+var
+  ResultCode: Integer;
+begin
+  Result := False;
+  if FileExists(ExpandConstant('{app}\{#MyAppExeName}')) then
+    Result := Exec(ExpandConstant('{app}\{#MyAppExeName}'), Flag, '', SW_HIDE,
+      ewWaitUntilTerminated, ResultCode) and (ResultCode = 0);
+end;
+
+{ Last resort when the cleanup command could not run: switch off a proxy that still
+  points at CleanNet. }
+procedure DisableLeftoverProxy;
 var
   ProxyServer: String;
+  ProxyEnable: Cardinal;
 begin
+  if not RegQueryDWordValue(HKCU, InternetSettingsKey, 'ProxyEnable', ProxyEnable) then
+    exit;
+  if (ProxyEnable <> 0) and RegQueryStringValue(HKCU, InternetSettingsKey, 'ProxyServer', ProxyServer) then
+    if CompareText(ProxyServer, '127.0.0.1:8080') = 0 then
+      RegWriteDWordValue(HKCU, InternetSettingsKey, 'ProxyEnable', 0);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  { An upgrade must not replace files under a running CleanNet. It is started again
+    after setup, and restores the proxy from its backup when it starts. }
+  WasRunning := StopCleanNet(ExpandConstant('{app}\{#MyAppExeName}'));
+  Result := '';
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  ResultCode: Integer;
+begin
+  if CurStep = ssPostInstall then
+  begin
+    if WasRunning then
+      ExecAsOriginalUser(ExpandConstant('{app}\{#MyAppExeName}'), '', '', SW_SHOWNORMAL, ewNoWait, ResultCode)
+    else
+      { Also repairs a proxy that an older CleanNet uninstaller left pointing at CleanNet. }
+      RunCleanNetCleanup('--restore-proxy');
+  end;
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+  begin
+    { Before the files are removed: stop CleanNet, then let it restore the proxy the user
+      had before and remove autostart. }
+    StopCleanNet(ExpandConstant('{app}\{#MyAppExeName}'));
+    CleanupDone := RunCleanNetCleanup('--cleanup');
+  end;
   if CurUninstallStep = usPostUninstall then
   begin
-    if RegQueryStringValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Internet Settings', 'ProxyServer', ProxyServer) then
-    begin
-      if CompareText(ProxyServer, '127.0.0.1:8080') = 0 then
-      begin
-        RegWriteDWordValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Internet Settings', 'ProxyEnable', 0);
-        RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Internet Settings', 'ProxyServer');
-        RegDeleteValue(HKCU, 'Software\Microsoft\Windows\CurrentVersion\Internet Settings', 'ProxyOverride');
-      end;
-    end;
+    RegDeleteValue(HKCU, RunKey, AutostartValue);
+    if not CleanupDone then
+      DisableLeftoverProxy;
   end;
 end;

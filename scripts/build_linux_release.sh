@@ -8,7 +8,7 @@ STAGE="$DIST/cleannet-linux-$VERSION"
 ARCHIVE="$DIST/cleannet-linux-$VERSION.tar.gz"
 
 # Modules only the Windows build uses; the platform facades never import them on Linux.
-WINDOWS_ONLY_MODULES=(windows_integration.py network_monitor_windows.py tray_windows.py)
+WINDOWS_ONLY_MODULES=(windows_integration.py network_monitor_windows.py tray_windows.py uninstall_cleanup.py)
 
 cd "$ROOT"
 ./run_tests.sh
