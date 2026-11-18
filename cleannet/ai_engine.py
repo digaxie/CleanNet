@@ -6,7 +6,9 @@ from datetime import datetime
 import copy
 import json
 import logging
+import os
 import random as _rng
+import shutil
 import time
 from typing import Any, Callable, Iterable
 
@@ -303,6 +305,20 @@ class AdaptiveStrategyEngine:
         site["total_observations"] = int(old.get("total_observations", 0) or 0)
         return site
 
+    def legacy_backup_path(self, version: int) -> str:
+        root, ext = os.path.splitext(self.model_file)
+        return f"{root}.v{version}.bak{ext or '.json'}"
+
+    def _backup_legacy_model(self, version: int) -> None:
+        backup = self.legacy_backup_path(version)
+        if os.path.exists(backup):
+            return  # never overwrite the first, untouched copy
+        try:
+            shutil.copy2(self.model_file, backup)
+            self.logger.info(f"[AI] Kept the v{version} model as {os.path.basename(backup)}")
+        except OSError as e:
+            self.logger.warning(f"[AI] Could not back up the v{version} model: {e}")
+
     def _load(self) -> None:
         try:
             with open(self.model_file, "r", encoding="utf-8") as f:
@@ -315,6 +331,9 @@ class AdaptiveStrategyEngine:
                 data.update(loaded)
                 self._data = data
             elif version in (2, 3):
+                # Older CleanNet versions cannot read v4 and would overwrite it, so keep
+                # the original next to it: downgrading then only needs a file rename.
+                self._backup_legacy_model(version)
                 data = self._default_data()
                 for name, site in (loaded.get("sites") or {}).items():
                     if isinstance(site, dict):

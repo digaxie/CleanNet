@@ -263,6 +263,17 @@ class BanditEngineTests(unittest.TestCase):
             self.assertEqual(arm["latency_ms"], 80.0)
             self.assertNotIn("nn_weights", engine._data["sites"]["discord"])
 
+            # The untouched v3 file is kept for downgrades.
+            backup = os.path.join(tmp, "ai.v3.bak.json")
+            with open(backup, encoding="utf-8") as f:
+                self.assertEqual(json.load(f)["version"], 3)
+
+            # Saving v4 must not touch the backup, and a second load must not redo it.
+            engine.force_save()
+            _engine(tmp)
+            with open(backup, encoding="utf-8") as f:
+                self.assertEqual(json.load(f)["version"], 3)
+
 
 class StrategyCacheOrderingTests(unittest.TestCase):
     def _cache(self, tmp, engine, config=None):
