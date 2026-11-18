@@ -243,6 +243,106 @@ def _write_proxy_state(state: dict[str, Any]) -> None:
     _refresh_proxy_settings()
 
 
+def _restored_connection_blob(saved: Any, current: Any, enable: bool) -> bytes:
+    """Return ``saved`` with a newer change counter and a proxy flag matching ``enable``.
+
+    WinINet treats this blob as the source of truth: it ignores a blob whose counter is
+    not newer than the one it last saw, and it derives ProxyEnable from the blob's proxy
+    flag. Writing an old backup back verbatim can therefore leave the proxy switched on.
+    """
+    data = bytearray(_coerce_binary(saved))
+    if len(data) < 12:
+        return bytes(data)
+    counter = max(_unpack_dword(bytes(data), 4), _unpack_dword(_coerce_binary(current), 4))
+    data[4:8] = _pack_dword((counter + 1) & 0xFFFFFFFF)
+    flags = _unpack_dword(bytes(data), 8)
+    flags = flags | CONNECTION_PROXY_FLAG if enable else flags & ~CONNECTION_PROXY_FLAG
+    data[8:12] = _pack_dword(flags)
+    return bytes(data)
+
+
+def _read_proxy_enable() -> bool:
+    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, INTERNET_SETTINGS_KEY, 0, winreg.KEY_READ)
+    try:
+        return bool(_read_value(key, "ProxyEnable").get("value"))
+    finally:
+        winreg.CloseKey(key)
+
+
+def _set_proxy_enable_value(enable: bool) -> None:
+    key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, INTERNET_SETTINGS_KEY, 0, winreg.KEY_ALL_ACCESS)
+    try:
+        winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 1 if enable else 0)
+    finally:
+        winreg.CloseKey(key)
+
+
+def _set_connection_proxy_flag(enable: bool) -> None:
+    current = _read_connection_state()
+    updated = {
+        name: {**item, "value": _restored_connection_blob(item.get("value"), None, enable)}
+        for name, item in current.items()
+        if item.get("exists")
+    }
+    _write_connection_state(updated)
+
+
+def _confirm_proxy_enable(expected: bool, attempts: int = 3, delay: float = 0.3, sleep=None) -> bool:
+    """Re-apply ProxyEnable until Windows keeps it.
+
+    After a refresh, WinINet can write its own cached settings back to the registry.
+    """
+    sleep = sleep or time.sleep
+    for _ in range(attempts):
+        sleep(delay)
+        if _read_proxy_enable() == expected:
+            return True
+        _set_proxy_enable_value(expected)
+        _set_connection_proxy_flag(expected)
+        _refresh_proxy_settings()
+    return _read_proxy_enable() == expected
+
+
+def _restore_proxy_state(state: dict[str, Any], host: str, port: int, logger=None) -> bool:
+    """Write a backup taken by ``set_system_proxy`` back, keeping both stores consistent."""
+    state = dict(state)
+    enable_item = state.get("ProxyEnable") or {}
+    enabled = bool(enable_item.get("exists") and enable_item.get("value"))
+    server = (state.get("ProxyServer") or {}).get("value")
+    if enabled and is_app_proxy_server(server, host, port):
+        # The backup was taken while an earlier CleanNet still owned the proxy (for
+        # example after a crash). Restoring it would point Windows at a dead port.
+        enabled = False
+        state["ProxyEnable"] = {"exists": True, "value": 0, "type": winreg.REG_DWORD}
+        if logger:
+            logger.info("[PROXY] Backup pointed at CleanNet itself; restoring proxy as off")
+
+    saved = state.get("ConnectionSettings") or {}
+    current = _read_connection_state()
+    connection: dict[str, Any] = {}
+    for name in ("DefaultConnectionSettings", "SavedLegacySettings"):
+        saved_item = saved.get(name) or {}
+        current_item = current.get(name) or {}
+        source = saved_item if saved_item.get("exists") else current_item
+        if not source.get("exists"):
+            continue
+        connection[name] = {
+            "exists": True,
+            "type": source.get("type") or getattr(winreg, "REG_BINARY", 3),
+            "value": _restored_connection_blob(source.get("value"), current_item.get("value"), enabled),
+        }
+    state["ConnectionSettings"] = connection
+    _write_proxy_state(state)
+    return _confirm_proxy_enable(enabled)
+
+
+def _disable_app_proxy(host: str, port: int) -> bool:
+    _set_proxy_enable_value(False)
+    _sync_connection_proxy_settings(False, host, port, "")
+    _refresh_proxy_settings()
+    return _confirm_proxy_enable(False)
+
+
 def _write_app_proxy(host: str, port: int, bypass_list: str) -> None:
     key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, INTERNET_SETTINGS_KEY, 0, winreg.KEY_ALL_ACCESS)
     try:
@@ -348,23 +448,19 @@ def recover_orphaned_proxy(host: str, port: int, app_dir: str, logger=None) -> b
     try:
         backup = _load_backup(app_dir)
         if backup and isinstance(backup.get("state"), dict):
-            _write_proxy_state(backup["state"])
+            confirmed = _restore_proxy_state(backup["state"], host, port, logger=logger)
             _clear_backup(app_dir)
             if logger:
                 logger.info("[PROXY] Recovered previous proxy state from CleanNet backup")
+                if not confirmed:
+                    logger.warning("[PROXY] Windows did not keep the restored proxy setting")
             return True
 
         current = read_proxy_state()
         enabled = bool(current.get("ProxyEnable", {}).get("value", 0))
         server = current.get("ProxyServer", {}).get("value")
         if enabled and is_app_proxy_server(server, host, port):
-            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, INTERNET_SETTINGS_KEY, 0, winreg.KEY_ALL_ACCESS)
-            try:
-                winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
-            finally:
-                winreg.CloseKey(key)
-            _sync_connection_proxy_settings(False, host, port, "")
-            _refresh_proxy_settings()
+            _disable_app_proxy(host, port)
             if logger:
                 logger.info("[PROXY] Cleared stale CleanNet proxy without backup")
             return True
@@ -399,10 +495,12 @@ def set_system_proxy(
 
         backup = _load_backup(app_dir)
         if backup and isinstance(backup.get("state"), dict):
-            _write_proxy_state(backup["state"])
+            confirmed = _restore_proxy_state(backup["state"], host, port, logger=logger)
             _clear_backup(app_dir)
             if logger:
                 logger.info("[PROXY] Previous Windows proxy state restored")
+                if not confirmed:
+                    logger.warning("[PROXY] Windows did not keep the restored proxy setting")
             return True
 
         current = read_proxy_state()
@@ -411,13 +509,7 @@ def set_system_proxy(
         if not enabled or not is_app_proxy_server(server, host, port):
             return True
 
-        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, INTERNET_SETTINGS_KEY, 0, winreg.KEY_ALL_ACCESS)
-        try:
-            winreg.SetValueEx(key, "ProxyEnable", 0, winreg.REG_DWORD, 0)
-        finally:
-            winreg.CloseKey(key)
-        _sync_connection_proxy_settings(False, host, port, "")
-        _refresh_proxy_settings()
+        _disable_app_proxy(host, port)
         return True
     except Exception as e:
         if logger:
