@@ -1,5 +1,14 @@
 ﻿# Changelog
 
+## 2.1.6 - 2026-11-18
+
+Installer and uninstaller fix release.
+
+- **Uninstalling could leave Windows without internet.** The uninstaller did not stop a running CleanNet, so it switched the system proxy back on and kept pointing Windows at a proxy that no longer existed. The uninstaller now stops CleanNet first, restores the proxy settings you had before CleanNet, and removes the autostart entry.
+- **Uninstalling deleted your sites and settings.** `config.json` is now kept on uninstall, like the learned data next to it, so reinstalling brings everything back.
+- **Upgrading over a running CleanNet** stops it first and starts it again after setup. Setup also repairs a proxy that an older uninstaller left behind.
+- Restoring the previous proxy also brings Windows' connection settings in line with it, and a proxy backup that points at CleanNet itself (left by a crash) is restored as "off" instead of pointing Windows at CleanNet again.
+
 ## 2.1.5 - 2026-11-18
 
 Security and reliability fix release.
