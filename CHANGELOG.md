@@ -1,5 +1,14 @@
 ﻿# Changelog
 
+## 2.2.0 - Beta (not yet released)
+
+- **Verified strategy success.** Training, self-training and the site test now complete a real TLS handshake (certificate, hostname and Finished checks) through each strategy. DPI block pages that answer with their own certificate are reported as "DPI intercepted" instead of success, and live connections the browser rejects right after a "successful" strategy are re-counted as failures. The dashboard shows a verification badge per site.
+- **New dashboard.** Rebuilt around what users need: an Overview that answers "am I protected?" and lists what needs attention with one-click fixes, a Sites page with an add-site wizard and a detail panel per site (verification, test, strategy, domains, CDN finder), Activity (live connections, latency, results, logs, per-app exclusions), the Smart engine and Settings. Light, dark and system themes, mobile layout with bottom navigation, deep links, keyboard focus states, and complete English, Turkish (now with proper characters) and German text. Still a single local file with no external resources.
+- **Strategy AI rewritten (engine v4).** A discounted Beta bandit per site replaces the neural network, linear score and drift detector. The network had been trained with the outcome leaking into its inputs, and live connections paid for random exploration. Live traffic now always uses the best known order; exploration happens in background probes. The dashboard reports first-try success and average connect time instead of the old "accuracy". Existing models migrate automatically.
+- **Strategies.** Added `sni_multi_record`, `sni_tcp_drip`, `tls_record_tcp_split` and `tls_record_long_delay`. Retired `sni_padding`, `dot_shuffle`, `reverse_frag`, `tls_frag_overlap` and `tls_interleaved_ccs` from automatic selection: they either change ClientHello content (the server replies but the handshake fails) or can never be accepted. They still work when a site is locked to them.
+- **One codebase for Windows and Linux.** The `linux/` copy is gone; `cleannet/` selects `windows_integration` / `linux_integration`, the netstat / ss network monitor and the pystray / Qt tray at runtime. Linux docs moved to `docs/LINUX.md`; the Linux launcher and release scripts now live at the repository root and `scripts/`.
+- **CI.** GitHub Actions runs the test suite on Windows and Linux (Python 3.10 and 3.13) and builds and verifies the Linux release archive.
+
 ## 2.1.6 - 2026-11-18
 
 Installer and uninstaller fix release.

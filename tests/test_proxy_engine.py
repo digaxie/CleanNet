@@ -1,3 +1,4 @@
+import asyncio
 import unittest
 from unittest import mock
 
@@ -328,6 +329,101 @@ class ProxyEngineReadTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(calls, [("example.com", 80)])
+
+
+
+class _RecordingCache:
+    def __init__(self):
+        self.failures = []
+
+    def record_failure(self, site, strategy):
+        self.failures.append((site, strategy))
+
+
+class _RecordingAi:
+    def __init__(self):
+        self.records = []
+
+    def record(self, site, strategy, success, ms):
+        self.records.append((site, strategy, success, ms))
+
+
+class ClientRejectionTests(unittest.IsolatedAsyncioTestCase):
+    def test_small_alert_then_close_is_rejection(self):
+        stats = {"client_bytes": 30, "server_bytes": 4000, "client_closed_first": True, "duration": 0.2}
+
+        self.assertTrue(ProxyEngine.looks_rejected_by_client(stats))
+
+    def test_healthy_or_cancelled_connections_are_not_rejections(self):
+        base = {"client_bytes": 30, "server_bytes": 4000, "client_closed_first": True, "duration": 0.2}
+        cases = {
+            "finished sent": {**base, "client_bytes": 64},
+            "server closed first": {**base, "client_closed_first": False},
+            "cancelled race, nothing sent": {**base, "client_bytes": 0},
+            "long-lived": {**base, "duration": 30.0},
+        }
+        for name, stats in cases.items():
+            with self.subTest(case=name):
+                self.assertFalse(ProxyEngine.looks_rejected_by_client(stats))
+        self.assertFalse(ProxyEngine.looks_rejected_by_client(None))
+
+    def test_record_client_rejection_turns_success_into_failure(self):
+        context = ProxyEngineTests._context(None)
+        context.strategy_cache = _RecordingCache()
+        context.ai_engine = _RecordingAi()
+        context.site_stats["discord"] = {"connections": 1, "successes": 1, "failures": 0, "total_ms": 50}
+        verifications = []
+        context.record_verification = lambda site, status, **kw: verifications.append((site, status, kw["source"]))
+
+        ProxyEngine(context).record_client_rejection("discord", "tls_record_frag", "discord.com")
+
+        self.assertEqual(context.strategy_cache.failures, [("discord", "tls_record_frag")])
+        self.assertEqual(context.ai_engine.records, [("discord", "tls_record_frag", False, 0)])
+        self.assertEqual(context.site_stats["discord"]["successes"], 0)
+        self.assertEqual(context.site_stats["discord"]["failures"], 1)
+        self.assertEqual(context.site_stats["discord"]["rejections"], 1)
+        self.assertEqual(context.stats["client_rejections"], 1)
+        self.assertEqual(verifications, [("discord", "rejected", "live")])
+        self.assertTrue(context.strategy_history[-1]["rejected"])
+
+    async def test_tunnel_reports_byte_counts_and_who_closed(self):
+        client_reader = _ChunkReader(b"\x15\x03\x03\x00\x02\x02\x2a")
+
+        class _SlowReader:
+            async def read(self, _size):
+                await asyncio.sleep(5)
+                return b""
+
+        stats = await ProxyEngine(ProxyEngineTests._context(None)).tunnel_plain(
+            client_reader, _Writer(), _SlowReader(), _Writer()
+        )
+
+        self.assertEqual(stats["client_bytes"], 7)
+        self.assertTrue(stats["client_closed_first"])
+        self.assertTrue(ProxyEngine.looks_rejected_by_client(stats))
+
+
+
+class ConnectionMetricTests(unittest.TestCase):
+    def test_outcome_is_forwarded_to_engine(self):
+        calls = []
+
+        class _Engine:
+            def record_connection(self, site, first_try, connect_ms):
+                calls.append((site, first_try, connect_ms))
+
+        context = ProxyEngineTests._context(None)
+        context.ai_engine = _Engine()
+
+        ProxyEngine(context).record_connection_outcome("discord", first_try=True, connect_ms=120.0)
+
+        self.assertEqual(calls, [("discord", True, 120.0)])
+
+    def test_engines_without_metrics_are_tolerated(self):
+        context = ProxyEngineTests._context(None)
+        context.ai_engine = object()
+
+        ProxyEngine(context).record_connection_outcome("discord", first_try=False, connect_ms=None)
 
 
 if __name__ == "__main__":

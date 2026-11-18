@@ -11,8 +11,33 @@ def build_strategy_recommendations(
     ai_stats: dict[str, Any] | None,
     strategy_history: list[dict[str, Any]],
     active_connections: list[dict[str, Any]],
+    verification: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     recommendations: list[dict[str, Any]] = []
+
+    # Verification problems are the most actionable signal, so they go first.
+    for site_name, snap in (verification or {}).items():
+        if not snap or site_name not in sites:
+            continue
+        last = snap.get("last") or {}
+        if snap.get("intercepted_recently") and last.get("status") != "verified":
+            recommendations.append({
+                "level": "critical",
+                "site": site_name,
+                "code": "dpi_intercepted",
+                "title": "DPI interception detected",
+                "detail": "The network answered with a certificate for another host. Run AI training "
+                          "to find a strategy that passes verification.",
+            })
+        elif last.get("status") == "rejected":
+            recommendations.append({
+                "level": "warning",
+                "site": site_name,
+                "code": "browser_rejected",
+                "title": "Browser rejected a bypassed connection",
+                "detail": f"{last.get('strategy') or 'A strategy'} got a server reply but the handshake "
+                          "failed in the browser; it is now counted as a failure.",
+            })
 
     for site_name, site in sites.items():
         stats = site_stats.get(site_name, {})
@@ -25,6 +50,7 @@ def build_strategy_recommendations(
             recommendations.append({
                 "level": "info",
                 "site": site_name,
+                "code": "site_disabled",
                 "title": "Site disabled",
                 "detail": "Enable it before expecting traffic to use bypass strategies.",
             })
@@ -34,6 +60,7 @@ def build_strategy_recommendations(
             recommendations.append({
                 "level": "warning",
                 "site": site_name,
+                "code": "no_ip_pool",
                 "title": "No pinned IP pool",
                 "detail": "Run IP refresh or domain resolve so fallback routing has more choices.",
             })
@@ -44,6 +71,7 @@ def build_strategy_recommendations(
                 recommendations.append({
                     "level": "critical",
                     "site": site_name,
+                    "code": "high_failure_rate",
                     "title": "High strategy failure rate",
                     "detail": f"{round(failure_rate * 100)}% of recent recorded attempts failed; run AI training for this site.",
                 })
@@ -52,6 +80,7 @@ def build_strategy_recommendations(
             recommendations.append({
                 "level": "info",
                 "site": site_name,
+                "code": "no_traffic",
                 "title": "No traffic observed",
                 "detail": "Open the target site once to let CleanNet learn a baseline.",
             })
@@ -63,6 +92,7 @@ def build_strategy_recommendations(
             recommendations.append({
                 "level": "info",
                 "site": "AI",
+                "code": "ai_warming_up",
                 "title": "AI still warming up",
                 "detail": "Collect at least 20 observations before trusting automatic ranking.",
             })
@@ -70,14 +100,16 @@ def build_strategy_recommendations(
             recommendations.append({
                 "level": "warning",
                 "site": "AI",
-                "title": "Low prediction accuracy",
-                "detail": "Reset or retrain strategies if this stays low after fresh traffic.",
+                "code": "low_first_try",
+                "title": "Low first-try success",
+                "detail": "The first strategy tried often fails; run AI training so live traffic starts with one that works.",
             })
 
     if len(active_connections) >= 20:
         recommendations.append({
             "level": "warning",
             "site": "runtime",
+            "code": "many_connections",
             "title": "High live connection count",
             "detail": "Watch latency and per-site throttling during bursts.",
         })
@@ -87,6 +119,7 @@ def build_strategy_recommendations(
         recommendations.append({
             "level": "warning",
             "site": "runtime",
+            "code": "many_failures",
             "title": "Many recent strategy failures",
             "detail": "Use Test All or Train AI after network conditions stabilize.",
         })

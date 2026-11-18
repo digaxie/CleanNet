@@ -55,6 +55,61 @@ class ConnectionTracker:
             return len(self._items)
 
 
+class VerificationTracker:
+    """Per-site record of how trustworthy the last strategy results were.
+
+    Sources: verified training probes ("probe"), the dashboard site test ("test") and
+    live connections the browser rejected right after the handshake ("live").
+    """
+
+    INTERCEPT_WINDOW = 6 * 3600
+
+    def __init__(self, time_func: Callable[[], float] = time.time):
+        self._sites: dict[str, dict[str, Any]] = {}
+        self._lock = threading.Lock()
+        self._time = time_func
+
+    def record(self, site: str, status: str, *, strategy: str = "", detail: str = "", source: str = "probe") -> None:
+        now = self._time()
+        event = {"status": status, "strategy": strategy, "detail": detail, "source": source, "time": now}
+        with self._lock:
+            entry = self._sites.setdefault(site, {
+                "last": None,
+                "last_success": None,
+                "last_intercepted": None,
+                "counts": {},
+            })
+            entry["last"] = event
+            entry["counts"][status] = entry["counts"].get(status, 0) + 1
+            if status in ("verified", "unverified"):
+                entry["last_success"] = event
+            elif status == "intercepted":
+                entry["last_intercepted"] = event
+
+    def snapshot(self, site: str) -> dict[str, Any] | None:
+        with self._lock:
+            entry = self._sites.get(site)
+            if not entry:
+                return None
+            now = self._time()
+            last_intercepted = entry["last_intercepted"]
+            return {
+                "last": dict(entry["last"]) if entry["last"] else None,
+                "last_success": dict(entry["last_success"]) if entry["last_success"] else None,
+                "intercepted_recently": bool(
+                    last_intercepted and now - last_intercepted["time"] < self.INTERCEPT_WINDOW
+                ),
+                "counts": dict(entry["counts"]),
+            }
+
+    def clear(self, site: str | None = None) -> None:
+        with self._lock:
+            if site is None:
+                self._sites.clear()
+            else:
+                self._sites.pop(site, None)
+
+
 def default_global_stats() -> dict[str, int]:
     return {
         "connections": 0,
@@ -63,6 +118,7 @@ def default_global_stats() -> dict[str, int]:
         "last_ip_refresh": 0,
         "strategy_tries": 0,
         "strategy_fallbacks": 0,
+        "client_rejections": 0,
     }
 
 
@@ -102,6 +158,7 @@ class RuntimeState:
     stats: dict[str, Any] = field(default_factory=default_global_stats)
     site_stats: dict[str, Any] = field(default_factory=dict)
     connection_tracker: ConnectionTracker = field(default_factory=ConnectionTracker)
+    verification: VerificationTracker = field(default_factory=VerificationTracker)
     test_results: dict[str, Any] = field(default_factory=dict)
     strategy_history: Any = field(default_factory=lambda: deque(maxlen=100))
     domain_ips: dict[str, list[str]] = field(default_factory=dict)

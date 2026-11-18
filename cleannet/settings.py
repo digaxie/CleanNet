@@ -10,12 +10,18 @@ from typing import Any
 
 @dataclass(frozen=True)
 class AppPaths:
-    script_dir: str
+    source_dir: str  # code and bundled assets
+    data_dir: str  # writable runtime data: config, logs, caches
     app_file: str
     config_file: str
     strategy_cache_file: str
     stats_file: str
     ai_strategy_file: str
+
+    @property
+    def script_dir(self) -> str:
+        """Backwards-compatible name for the writable data directory."""
+        return self.data_dir
 
 
 @dataclass(frozen=True)
@@ -34,15 +40,10 @@ class RuntimeSettings:
     strategy_save_interval: int = 60
     ai_save_interval: int = 120
     ai_min_samples: int = 5
-    ai_exploration_rate: float = 0.15
-    ai_decay_factor: float = 0.95
+    # Per-observation discount of the strategy posteriors (memory of ~50 observations).
+    ai_discount: float = 0.98
     ai_ring_buffer_size: int = 100
-    ai_drift_check_interval: int = 60
     ai_self_train_interval: int = 1800
-    ai_nn_hidden_size: int = 16
-    ai_nn_input_size: int = 10
-    ai_nn_learning_rate: float = 0.01
-    ai_thompson_decay_interval: int = 200
     blocked_domain_ttl: int = 300
     site_max_concurrent: int = 24
     dns_privacy_cache_ttl: int = 900
@@ -51,36 +52,58 @@ class RuntimeSettings:
     cdn_keyword_map: dict[str, str] = field(default_factory=lambda: {"discordapp": "discord"})
 
 
-def build_app_paths(app_file: str) -> AppPaths:
+def build_app_paths(app_file: str, *, system: str | None = None) -> AppPaths:
+    """Resolve where code/assets live (source_dir) and where runtime data goes (data_dir).
+
+    Windows keeps its historical layout: data next to the source for portable/dev
+    runs, ``%LOCALAPPDATA%\\CleanNet`` for the packaged EXE. Linux uses
+    ``$XDG_DATA_HOME/cleannet``. ``CLEANNET_DATA_DIR`` overrides both.
+    """
+    system = system or sys.platform
     app_file = os.path.abspath(app_file)
     if getattr(sys, "frozen", False):
         app_file = os.path.abspath(sys.executable)
-        exe_dir = os.path.dirname(app_file)
-        parent_dir = os.path.dirname(exe_dir)
-        if (
-            os.path.basename(exe_dir).lower() == "dist"
-            and (
-                os.path.exists(os.path.join(parent_dir, "bypass_silent.pyw"))
-                or os.path.isdir(os.path.join(parent_dir, "cleannet"))
-            )
-        ):
-            runtime_dir = parent_dir
-        else:
-            runtime_dir = os.path.join(
-                os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
-                "CleanNet",
-            )
+        source_dir = os.path.dirname(app_file)
     else:
-        runtime_dir = os.path.dirname(app_file)
-    data_dir_override = os.environ.get("CLEANNET_DATA_DIR")
-    script_dir = os.path.abspath(data_dir_override or runtime_dir)
+        source_dir = os.path.dirname(app_file)
+        # Started as ``python -m cleannet``: the project root is one level up.
+        if os.path.basename(source_dir) == "cleannet":
+            source_dir = os.path.dirname(source_dir)
+
+    if system == "win32":
+        if getattr(sys, "frozen", False):
+            exe_dir = source_dir
+            parent_dir = os.path.dirname(exe_dir)
+            if (
+                os.path.basename(exe_dir).lower() == "dist"
+                and (
+                    os.path.exists(os.path.join(parent_dir, "bypass_silent.pyw"))
+                    or os.path.isdir(os.path.join(parent_dir, "cleannet"))
+                )
+            ):
+                default_data = parent_dir
+            else:
+                default_data = os.path.join(
+                    os.environ.get("LOCALAPPDATA") or os.path.expanduser("~"),
+                    "CleanNet",
+                )
+        else:
+            default_data = source_dir
+    else:
+        home = os.environ.get("HOME") or os.path.expanduser("~")
+        xdg_data_home = os.environ.get("XDG_DATA_HOME") or os.path.join(home, ".local", "share")
+        default_data = os.path.join(xdg_data_home, "cleannet")
+
+    data_dir = os.path.abspath(os.environ.get("CLEANNET_DATA_DIR") or default_data)
+    source_dir = os.path.abspath(source_dir)
     return AppPaths(
-        script_dir=script_dir,
+        source_dir=source_dir,
+        data_dir=data_dir,
         app_file=app_file,
-        config_file=os.path.join(script_dir, "config.json"),
-        strategy_cache_file=os.path.join(script_dir, "strategy_cache.json"),
-        stats_file=os.path.join(script_dir, "stats.json"),
-        ai_strategy_file=os.path.join(script_dir, "ai_strategy.json"),
+        config_file=os.path.join(data_dir, "config.json"),
+        strategy_cache_file=os.path.join(data_dir, "strategy_cache.json"),
+        stats_file=os.path.join(data_dir, "stats.json"),
+        ai_strategy_file=os.path.join(data_dir, "ai_strategy.json"),
     )
 
 

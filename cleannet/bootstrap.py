@@ -31,15 +31,15 @@ from .runtime import RuntimeState
 from .settings import AppPaths, RuntimeSettings, build_app_paths, build_runtime_settings
 from .stats import load_stats_file, save_stats_file
 from .strategies import StrategyRuntimeContext, build_strategy_funcs
-from .strategy_catalog import AI_TRAIN_PROFILES, STRATEGY_ORDER
+from .strategy_catalog import AI_TRAIN_PROFILES, AUTO_STRATEGY_ORDER, STRATEGY_ORDER
 from .training import TrainingManager, TrainingRuntimeContext
 from .tray import TRAY_AVAILABLE, TrayManager, TrayRuntimeContext
-from .windows_integration import (
+from .system_integration import (
     SessionEndWatcher,
     ensure_system_proxy_enabled,
-    get_autostart as _win_get_autostart,
+    get_autostart as _os_get_autostart,
     recover_orphaned_proxy,
-    set_autostart as _win_set_autostart,
+    set_autostart as _os_set_autostart,
     set_system_proxy,
     wait_for_network_ready,
 )
@@ -50,7 +50,7 @@ class CleanNetRuntime:
 
     def __init__(self, app_file: str):
         self.paths: AppPaths = build_app_paths(app_file)
-        self.logging_setup = setup_logging(self.paths.script_dir, reset_handlers=True)
+        self.logging_setup = setup_logging(self.paths.data_dir, reset_handlers=True)
         self.log_file = self.logging_setup.log_file
         self.logger = self.logging_setup.logger
         self.dashboard_handler = self.logging_setup.dashboard_handler
@@ -80,13 +80,8 @@ class CleanNetRuntime:
             train_intensity=self.state.ai_train_intensity,
             save_interval=self.settings.ai_save_interval,
             min_samples=self.settings.ai_min_samples,
-            decay_factor=self.settings.ai_decay_factor,
+            discount=self.settings.ai_discount,
             ring_buffer_size=self.settings.ai_ring_buffer_size,
-            drift_check_interval=self.settings.ai_drift_check_interval,
-            nn_hidden_size=self.settings.ai_nn_hidden_size,
-            nn_input_size=self.settings.ai_nn_input_size,
-            nn_learning_rate=self.settings.ai_nn_learning_rate,
-            thompson_decay_interval=self.settings.ai_thompson_decay_interval,
         )
         self.state.set_ai_train_intensity(self.ai_engine.train_intensity)
 
@@ -94,7 +89,7 @@ class CleanNetRuntime:
         self.training_manager = TrainingManager(self.build_training_context())
         self.proxy_engine = ProxyEngine(self.build_proxy_context())
         self.network_monitor = NetworkMonitor()
-        self.dashboard_html = load_dashboard_html(self.paths.script_dir, __version__)
+        self.dashboard_html = load_dashboard_html(self.paths.source_dir, __version__)
         self.dashboard_server = DashboardServer(self.build_dashboard_context())
         self.tray_manager = TrayManager(self.build_tray_context())
 
@@ -226,7 +221,7 @@ class CleanNetRuntime:
     def get_onboarding_status(self) -> dict[str, Any]:
         return {
             "completed": self.is_onboarding_complete(),
-            "data_dir": self.paths.script_dir,
+            "data_dir": self.paths.data_dir,
             "proxy_host": self.settings.local_host,
             "proxy_port": self.settings.local_port,
             "dashboard_port": self.settings.web_port,
@@ -272,7 +267,7 @@ class CleanNetRuntime:
             port,
             ALWAYS_BYPASS,
             self.state.config.get("proxy_bypass", []),
-            app_dir=self.paths.script_dir,
+            app_dir=self.paths.data_dir,
             logger=self.logger,
         )
 
@@ -282,6 +277,7 @@ class CleanNetRuntime:
             self.settings.local_port,
             ALWAYS_BYPASS,
             self.state.config.get("proxy_bypass", []),
+            app_dir=self.paths.data_dir,
             logger=self.logger,
         )
 
@@ -295,10 +291,10 @@ class CleanNetRuntime:
         return self.is_onboarding_complete() and bool(self.app and self.app.proxy_owned)
 
     def get_autostart(self) -> bool:
-        return _win_get_autostart(self.settings.autostart_reg_name)
+        return _os_get_autostart(self.settings.autostart_reg_name)
 
     def set_autostart(self, enable: bool):
-        return _win_set_autostart(
+        return _os_set_autostart(
             enable,
             self.settings.autostart_reg_name,
             self.paths.app_file,
@@ -392,6 +388,7 @@ class CleanNetRuntime:
             parse_iso=_parse_iso,
             now_iso=lambda: datetime.now().isoformat(timespec="seconds"),
             should_manage_proxy=self.should_manage_proxy,
+            record_verification=self.state.verification.record,
         )
 
     def build_training_context(self) -> TrainingRuntimeContext:
@@ -406,12 +403,13 @@ class CleanNetRuntime:
             ai_engine=self.ai_engine,
             strategy_cache=self.strategy_cache,
             strategy_funcs=self.strategy_funcs,
-            strategy_order=STRATEGY_ORDER,
+            strategy_order=AUTO_STRATEGY_ORDER,
             ai_train_profiles=AI_TRAIN_PROFILES,
             ai_min_samples=self.settings.ai_min_samples,
             get_bypass_ip=self.get_bypass_ip,
             resolve_domain_doh=self.resolve_domain_doh,
             hash_host=self.hash_host,
+            record_verification=self.state.verification.record,
         )
 
     def build_proxy_context(self) -> ProxyRuntimeContext:
@@ -444,6 +442,7 @@ class CleanNetRuntime:
             strategy_success_timeout=self.settings.strategy_success_timeout,
             blocked_domain_ttl=self.settings.blocked_domain_ttl,
             site_max_concurrent=self.settings.site_max_concurrent,
+            record_verification=self.state.verification.record,
         )
 
     def set_ai_train_intensity(self, value: str) -> None:
@@ -491,11 +490,12 @@ class CleanNetRuntime:
             strategy_history=self.state.strategy_history,
             test_results=self.state.test_results,
             site_privacy_state=self.state.site_privacy_state,
-            script_dir=self.paths.script_dir,
+            script_dir=self.paths.data_dir,
             local_host=self.settings.local_host,
             local_port=self.settings.local_port,
             strategy_names=list(STRATEGY_ORDER),
             web_port=self.settings.web_port,
+            get_verification=self.state.verification.snapshot,
         )
 
     def force_save_runtime_state(self) -> None:
@@ -511,7 +511,7 @@ class CleanNetRuntime:
             log_file=self.log_file,
             app_file=self.paths.app_file,
             python_executable=sys.executable,
-            asset_dir=self.paths.script_dir,
+            asset_dir=self.paths.source_dir,
             get_status=self.get_status,
             get_ping_ms=lambda: self.state.ping_ms,
             get_loop=self.get_loop,
@@ -552,13 +552,15 @@ class CleanNetRuntime:
             recover_proxy=lambda: recover_orphaned_proxy(
                 self.settings.local_host,
                 self.settings.local_port,
-                self.paths.script_dir,
+                self.paths.data_dir,
                 logger=self.logger,
             ),
             is_onboarding_complete=self.is_onboarding_complete,
             wait_for_network=self.wait_for_network,
-            session_watcher_factory=lambda on_session_end, logger: SessionEndWatcher(
-                on_session_end, logger=logger
+            session_watcher_factory=(
+                (lambda on_session_end, logger: SessionEndWatcher(on_session_end, logger=logger))
+                if SessionEndWatcher is not None
+                else None
             ),
         )
 

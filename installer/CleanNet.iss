@@ -1,5 +1,5 @@
 #define MyAppName "CleanNet"
-#define MyAppVersion "2.1.6"
+#define MyAppVersion "2.2.0"
 #define MyAppPublisher "CleanNet"
 #define MyAppURL "https://github.com/digaxie/CleanNet"
 #define MyAppExeName "CleanNet.exe"
@@ -21,7 +21,7 @@ OutputDir=..\dist
 OutputBaseFilename=CleanNet-{#MyAppVersion}-setup
 SetupIconFile=..\assets\cleannet_app.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
-VersionInfoVersion=2.1.6.0
+VersionInfoVersion=2.2.0.0
 VersionInfoCompany={#MyAppPublisher}
 VersionInfoDescription=CleanNet local proxy setup
 VersionInfoProductName={#MyAppName}

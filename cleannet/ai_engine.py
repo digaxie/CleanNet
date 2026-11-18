@@ -2,21 +2,21 @@
 
 from __future__ import annotations
 
-from collections import Counter
 from datetime import datetime
 import copy
 import json
 import logging
-import math
+import os
 import random as _rng
+import shutil
 import time
 from typing import Any, Callable, Iterable
 
 from .config import atomic_write_json
 from .strategy_catalog import (
-    STRATEGY_GROUPS,
+    AUTO_STRATEGY_ORDER,
+    RETIRED_STRATEGIES,
     STRATEGY_ORDER,
-    STRATEGY_TO_GROUP,
     normalize_train_intensity,
 )
 
@@ -35,6 +35,14 @@ def parse_iso(value: str | None) -> float | None:
 
 
 class StrategyCache:
+    """Per-site strategy bookkeeping: locks, failure cooldowns and success history.
+
+    Ranking itself comes from :class:`AdaptiveStrategyEngine`; this class only applies
+    the site's locked strategy and the short cooldown after repeated failures.
+    """
+
+    COOLDOWN_AFTER_CONSECUTIVE_FAILURES = 2
+
     def __init__(
         self,
         cache_file: str,
@@ -115,62 +123,40 @@ class StrategyCache:
         if forced and forced != "auto" and forced in self.strategy_names:
             return [forced]
 
-        if is_main:
-            ai_engine = self.ai_engine_provider()
-            ai_prediction = ai_engine.predict(site_name, count_as_prediction=True) if ai_engine else None
-            if ai_prediction:
-                ai_order = [p[0] for p in ai_prediction]
-                top_conf = ai_prediction[0][2] if ai_prediction else 0
-                sd = self._get_site_data(site_name)
-                now = time.time()
-                result: list[str] = []
-                cooldown_strats: list[str] = []
-                for strat in ai_order:
-                    fail_info = sd["failures"].get(strat)
-                    if fail_info:
-                        last_fail_time = parse_iso(fail_info.get("last_fail", ""))
-                        if last_fail_time and (now - last_fail_time) < self.failure_cooldown:
-                            cooldown_strats.append(strat)
-                            continue
-                    result.append(strat)
-
-                if result:
-                    self.logger.debug(
-                        f"[AI] {site_name}: predicted [{result[0]}] "
-                        f"(conf={top_conf}, order={','.join(result[:3])})"
-                    )
-                    return result
-                if cooldown_strats:
-                    return cooldown_strats[:4]
-
         sd = self._get_site_data(site_name)
+        ai_engine = self.ai_engine_provider()
+        if ai_engine is not None:
+            # Single source of truth: the engine's exploit ranking (posterior mean).
+            ranked = [s for s in ai_engine.rank(site_name) if s in self.strategy_names]
+        else:
+            ranked = []
+            best = sd["best_strategy"]
+            if best and best in self.strategy_names and best not in RETIRED_STRATEGIES:
+                ranked.append(best)
+            ranked += [s for s in AUTO_STRATEGY_ORDER if s in self.strategy_names and s not in ranked]
+
+        if not is_main:
+            return ranked
+
+        # Skip strategies that just failed repeatedly; one transient failure must not
+        # bench a strategy that has worked many times before.
         now = time.time()
         result: list[str] = []
         cooldown_strats: list[str] = []
-
-        if sd["best_strategy"] and sd["best_strategy"] in self.strategy_names:
-            result.append(sd["best_strategy"])
-
-        for strat in STRATEGY_ORDER:
-            if strat in result:
-                continue
-            if not is_main:
-                result.append(strat)
-                continue
+        for strat in ranked:
             fail_info = sd["failures"].get(strat)
-            if fail_info:
+            if fail_info and fail_info.get("consecutive", 0) >= self.COOLDOWN_AFTER_CONSECUTIVE_FAILURES:
                 last_fail_time = parse_iso(fail_info.get("last_fail", ""))
                 if last_fail_time and (now - last_fail_time) < self.failure_cooldown:
                     cooldown_strats.append(strat)
                     continue
             result.append(strat)
 
-        if not result and cooldown_strats:
-            strong = [s for s in ["desync", "tls_record_frag", "fragment_burst", "sni_shuffle"] if s in cooldown_strats]
-            weak = [s for s in cooldown_strats if s not in strong]
-            result = (strong + weak)[:4]
-
-        return result
+        if result:
+            self.logger.debug(f"[AI] {site_name}: order {','.join(result[:3])}")
+            return result
+        # Everything failed recently: still try the most promising few.
+        return cooldown_strats[:4]
 
     def record_success(self, site_name: str, strategy: str, elapsed_ms: float) -> None:
         sd = self._get_site_data(site_name)
@@ -203,6 +189,12 @@ class StrategyCache:
         self._save_if_needed()
 
     def get_site_strategy_info(self, site_name: str) -> dict[str, Any]:
+        ai_engine = self.ai_engine_provider()
+        insights = ai_engine.get_site_insights(site_name) if ai_engine is not None else None
+        if insights:
+            top = insights["predicted_strategy"]
+            succ = (self._data.get("sites", {}).get(site_name) or {}).get("successes", {}).get(top) or {}
+            return {"strategy": top, "time_ms": succ.get("avg_ms")}
         sd = self._data.get("sites", {}).get(site_name)
         if not sd:
             return {"strategy": "auto", "time_ms": None}
@@ -218,71 +210,32 @@ class StrategyCache:
         self.logger.info("Strategy cache reset")
 
 
-class MiniNN:
-    """2-layer feedforward neural network. Pure Python, zero dependencies."""
-
-    def __init__(self, input_size: int = 10, hidden_size: int = 16, output_size: int = 1, learning_rate: float = 0.01):
-        self.input_size = input_size
-        self.hidden_size = hidden_size
-        self.output_size = output_size
-        self.lr = learning_rate
-        s1 = (2.0 / (input_size + hidden_size)) ** 0.5
-        s2 = (2.0 / (hidden_size + output_size)) ** 0.5
-        self.W1 = [[_rng.gauss(0, s1) for _ in range(hidden_size)] for _ in range(input_size)]
-        self.b1 = [0.0] * hidden_size
-        self.W2 = [[_rng.gauss(0, s2) for _ in range(output_size)] for _ in range(hidden_size)]
-        self.b2 = [0.0] * output_size
-
-    def forward(self, x):
-        z1 = [
-            sum(x[i] * self.W1[i][j] for i in range(self.input_size)) + self.b1[j]
-            for j in range(self.hidden_size)
-        ]
-        h1 = [max(0.0, z) for z in z1]
-        z2 = [
-            sum(h1[i] * self.W2[i][j] for i in range(self.hidden_size)) + self.b2[j]
-            for j in range(self.output_size)
-        ]
-        out = [1.0 / (1.0 + math.exp(-max(-500, min(500, z)))) for z in z2]
-        return out, (x, z1, h1, z2)
-
-    def backward(self, cache, target):
-        x, z1, h1, z2 = cache
-        out = [1.0 / (1.0 + math.exp(-max(-500, min(500, z)))) for z in z2]
-        dz2 = [out[j] - target[j] for j in range(self.output_size)]
-        for i in range(self.hidden_size):
-            for j in range(self.output_size):
-                self.W2[i][j] -= self.lr * h1[i] * dz2[j]
-        for j in range(self.output_size):
-            self.b2[j] -= self.lr * dz2[j]
-        dh1 = [sum(dz2[j] * self.W2[i][j] for j in range(self.output_size)) for i in range(self.hidden_size)]
-        dz1 = [dh1[i] * (1.0 if z1[i] > 0 else 0.0) for i in range(self.hidden_size)]
-        for i in range(self.input_size):
-            for j in range(self.hidden_size):
-                self.W1[i][j] -= self.lr * x[i] * dz1[j]
-        for j in range(self.hidden_size):
-            self.b1[j] -= self.lr * dz1[j]
-
-    def to_dict(self):
-        return {
-            "W1": self.W1,
-            "b1": self.b1,
-            "W2": self.W2,
-            "b2": self.b2,
-            "is": self.input_size,
-            "hs": self.hidden_size,
-            "os": self.output_size,
-        }
-
-    @classmethod
-    def from_dict(cls, data, *, learning_rate: float = 0.01):
-        nn = cls(data.get("is", 10), data.get("hs", 16), data.get("os", 1), learning_rate)
-        nn.W1, nn.b1, nn.W2, nn.b2 = data["W1"], data["b1"], data["W2"], data["b2"]
-        return nn
-
-
 class AdaptiveStrategyEngine:
-    """Machine-learning based per-site strategy ranker."""
+    """Per-site strategy ranking with discounted Beta-Bernoulli bandits.
+
+    Each (site, strategy) pair keeps a Beta(a, b) posterior over "this strategy gets a
+    verified connection through on this network". Before every new observation for a
+    site, all of that site's posteriors are pulled back toward the prior by
+    ``discount`` (discounted Thompson sampling), so evidence fades over roughly
+    ``1 / (1 - discount)`` observations. That is what lets the engine follow an ISP
+    that changes its DPI, without a separate drift detector.
+
+    * Live traffic uses :meth:`rank` (exploit): strategies ordered by posterior mean,
+      latency only breaks near-ties. Users never pay for exploration.
+    * Exploration happens in background probes, which can ask for Thompson samples
+      with ``predict(..., explore=True)``.
+    * Untried strategies sit at the prior mean (0.5, or the cross-site prior), so they
+      are tried after known-good ones and before known-bad ones.
+
+    Version 3 of this engine also blended a per-site neural network, a hand-weighted
+    linear score and a drift detector. The network was trained on features computed
+    after the outcome was recorded (the label leaked into its inputs) and the drift
+    detector reacted to the engine's own exploration, so both were removed.
+    """
+
+    VERSION = 4
+    LATENCY_TIEBREAK = 0.05  # max score penalty for slow strategies (posterior mean is 0..1)
+    PRIOR_STRENGTH_CAP = 2.0  # cross-site prior is worth at most two local observations
 
     def __init__(
         self,
@@ -292,77 +245,108 @@ class AdaptiveStrategyEngine:
         train_intensity: str = "light",
         save_interval: int = 120,
         min_samples: int = 5,
-        decay_factor: float = 0.95,
+        discount: float = 0.98,
         ring_buffer_size: int = 100,
-        drift_check_interval: int = 60,
-        nn_hidden_size: int = 16,
-        nn_input_size: int = 10,
-        nn_learning_rate: float = 0.01,
-        thompson_decay_interval: int = 200,
+        rng: _rng.Random | None = None,
+        **_legacy_options: Any,
     ):
         self.model_file = model_file
         self.logger = logger or logging.getLogger(__name__)
         self.train_intensity = normalize_train_intensity(train_intensity)
         self.save_interval = save_interval
         self.min_samples = min_samples
-        self.decay_factor = decay_factor
+        self.discount = discount
         self.ring_buffer_size = ring_buffer_size
-        self.drift_check_interval = drift_check_interval
-        self.nn_hidden_size = nn_hidden_size
-        self.nn_input_size = nn_input_size
-        self.nn_learning_rate = nn_learning_rate
-        self.thompson_decay_interval = thompson_decay_interval
+        self.rng = rng or _rng.Random()
         self._data = self._default_data()
         self._dirty = False
         self._last_save = 0.0
-        self._nn_cache: dict[str, MiniNN] = {}
         self._load()
 
+    # ------------------------------------------------------------------ storage
     def _default_data(self) -> dict[str, Any]:
         return {
-            "version": 3,
+            "version": self.VERSION,
             "sites": {},
-            "global_weights": {
-                s: {"w_success": 1.0, "w_latency": 1.0, "w_recency": 1.0, "w_temporal": 1.0}
-                for s in STRATEGY_ORDER
-            },
             "global_priors": {},
-            "total_predictions": 0,
-            "correct_predictions": 0,
+            "connections": {"total": 0, "first_try_ok": 0, "avg_connect_ms": None},
         }
+
+    @staticmethod
+    def _new_site() -> dict[str, Any]:
+        return {
+            "arms": {},
+            "recent": [],
+            "hour_matrix": {},
+            "total_observations": 0,
+            "connections": {"total": 0.0, "first_try_ok": 0.0, "avg_connect_ms": None},
+        }
+
+    def _migrate_v3_site(self, old: dict[str, Any]) -> dict[str, Any]:
+        site = self._new_site()
+        thompson = old.get("thompson", {}) or {}
+        scores = old.get("strategy_scores", {}) or {}
+        for strategy, params in thompson.items():
+            a = max(1.0, float(params.get("alpha", 1.0)))
+            b = max(1.0, float(params.get("beta", 1.0)))
+            # v3 decayed rarely; cap old evidence so the new discounting can move it.
+            evidence = (a - 1.0) + (b - 1.0)
+            if evidence > 20.0:
+                scale = 20.0 / evidence
+                a = 1.0 + (a - 1.0) * scale
+                b = 1.0 + (b - 1.0) * scale
+            arm = {"a": round(a, 3), "b": round(b, 3), "latency_ms": None, "n": int(round(evidence))}
+            latency = (scores.get(strategy) or {}).get("ema_latency")
+            if latency is not None and (scores.get(strategy) or {}).get("ema_success", 0) > 0:
+                arm["latency_ms"] = round(float(latency), 1)
+            site["arms"][strategy] = arm
+        site["recent"] = list(old.get("recent", []))[-self.ring_buffer_size:]
+        site["hour_matrix"] = old.get("hour_matrix", {}) or {}
+        site["total_observations"] = int(old.get("total_observations", 0) or 0)
+        return site
+
+    def legacy_backup_path(self, version: int) -> str:
+        root, ext = os.path.splitext(self.model_file)
+        return f"{root}.v{version}.bak{ext or '.json'}"
+
+    def _backup_legacy_model(self, version: int) -> None:
+        backup = self.legacy_backup_path(version)
+        if os.path.exists(backup):
+            return  # never overwrite the first, untouched copy
+        try:
+            shutil.copy2(self.model_file, backup)
+            self.logger.info(f"[AI] Kept the v{version} model as {os.path.basename(backup)}")
+        except OSError as e:
+            self.logger.warning(f"[AI] Could not back up the v{version} model: {e}")
 
     def _load(self) -> None:
         try:
             with open(self.model_file, "r", encoding="utf-8") as f:
                 loaded = json.load(f)
+            if not isinstance(loaded, dict):
+                raise ValueError("unexpected model format")
             version = loaded.get("version", 1)
-            if version in (2, 3):
-                self._data = loaded
-                if version == 2:
-                    self._data["version"] = 3
-                    self._data.setdefault("global_priors", {})
-                    for site_ai in self._data.get("sites", {}).values():
-                        site_ai.setdefault("thompson", {})
-                        site_ai.setdefault("nn_weights", None)
-                    self._dirty = True
-                    self.logger.info("[AI] Migrated model v2 -> v3")
-
-            for site_name, site_ai in self._data.get("sites", {}).items():
-                if site_ai.get("nn_weights"):
-                    try:
-                        self._nn_cache[site_name] = MiniNN.from_dict(
-                            site_ai["nn_weights"],
-                            learning_rate=self.nn_learning_rate,
-                        )
-                    except Exception:
-                        pass
+            if version == self.VERSION:
+                data = self._default_data()
+                data.update(loaded)
+                self._data = data
+            elif version in (2, 3):
+                # Older CleanNet versions cannot read v4 and would overwrite it, so keep
+                # the original next to it: downgrading then only needs a file rename.
+                self._backup_legacy_model(version)
+                data = self._default_data()
+                for name, site in (loaded.get("sites") or {}).items():
+                    if isinstance(site, dict):
+                        data["sites"][name] = self._migrate_v3_site(site)
+                self._data = data
+                self._dirty = True
+                self.logger.info(f"[AI] Migrated model v{version} -> v{self.VERSION}")
             self.train_intensity = normalize_train_intensity(
-                self._data.get("train_intensity", self.train_intensity),
+                loaded.get("train_intensity", self.train_intensity),
                 self.train_intensity,
             )
             self.logger.info(
-                f"[AI v3] Model loaded: {len(self._data.get('sites', {}))} sites, "
-                f"{self._data.get('total_predictions', 0)} predictions, "
+                f"[AI v{self.VERSION}] Model loaded: {len(self._data.get('sites', {}))} sites, "
                 f"train_intensity={self.train_intensity}"
             )
         except FileNotFoundError:
@@ -377,9 +361,7 @@ class AdaptiveStrategyEngine:
     def _do_save(self) -> None:
         try:
             self._data["train_intensity"] = self.train_intensity
-            for site_name, nn in self._nn_cache.items():
-                if site_name in self._data.get("sites", {}):
-                    self._data["sites"][site_name]["nn_weights"] = nn.to_dict()
+            self._data["version"] = self.VERSION
             atomic_write_json(self.model_file, self._data, indent=None, ensure_ascii=False)
             self._dirty = False
             self._last_save = time.time()
@@ -415,428 +397,209 @@ class AdaptiveStrategyEngine:
             self._data.get("sites", {}).pop(site_name, None)
         self._dirty = True
 
+    def reset(self) -> None:
+        self._data = self._default_data()
+        self._dirty = True
+        self._do_save()
+        self.logger.info(f"[AI v{self.VERSION}] Model reset")
+
+    # ------------------------------------------------------------------ model
     def _get_site_ai(self, site_name: str) -> dict[str, Any]:
         sites = self._data.setdefault("sites", {})
         if site_name not in sites:
-            global_priors = self._data.get("global_priors", {})
-            thompson_init = {}
-            for strat in STRATEGY_ORDER:
-                prior = global_priors.get(strat, {"alpha": 1.0, "beta": 1.0})
-                thompson_init[strat] = {"alpha": prior["alpha"], "beta": prior["beta"]}
-            sites[site_name] = {
-                "hour_matrix": {},
-                "day_matrix": {},
-                "recent": [],
-                "strategy_scores": {},
-                "total_observations": 0,
-                "thompson": thompson_init,
-                "nn_weights": None,
-            }
+            sites[site_name] = self._new_site()
         return sites[site_name]
 
-    def _get_nn(self, site_name: str) -> MiniNN:
-        if site_name not in self._nn_cache:
-            site_ai = self._data.get("sites", {}).get(site_name)
-            if site_ai and site_ai.get("nn_weights"):
-                try:
-                    self._nn_cache[site_name] = MiniNN.from_dict(
-                        site_ai["nn_weights"],
-                        learning_rate=self.nn_learning_rate,
-                    )
-                except Exception:
-                    self._nn_cache[site_name] = MiniNN(self.nn_input_size, self.nn_hidden_size, learning_rate=self.nn_learning_rate)
-            else:
-                self._nn_cache[site_name] = MiniNN(self.nn_input_size, self.nn_hidden_size, learning_rate=self.nn_learning_rate)
-        return self._nn_cache[site_name]
+    def _prior(self, strategy: str) -> tuple[float, float]:
+        prior = self._data.get("global_priors", {}).get(strategy)
+        if not prior:
+            return 1.0, 1.0
+        return float(prior.get("alpha", 1.0)), float(prior.get("beta", 1.0))
+
+    def _arm(self, site_ai: dict[str, Any], strategy: str) -> dict[str, Any]:
+        arms = site_ai.setdefault("arms", {})
+        if strategy not in arms:
+            a, b = self._prior(strategy)
+            arms[strategy] = {"a": a, "b": b, "latency_ms": None, "n": 0}
+        return arms[strategy]
+
+    def _discount_site(self, site_ai: dict[str, Any]) -> None:
+        """Pull every arm of a site back toward its prior before a new observation."""
+        g = self.discount
+        for strategy, arm in site_ai.get("arms", {}).items():
+            pa, pb = self._prior(strategy)
+            arm["a"] = pa + (arm["a"] - pa) * g
+            arm["b"] = pb + (arm["b"] - pb) * g
 
     @staticmethod
-    def _gamma_sample(shape: float) -> float:
-        if shape <= 0:
-            return 0.001
-        if shape < 1.0:
-            return AdaptiveStrategyEngine._gamma_sample(shape + 1.0) * (_rng.random() ** (1.0 / shape))
-        d = shape - 1.0 / 3.0
-        c = 1.0 / math.sqrt(9.0 * d)
-        for _ in range(100):
-            while True:
-                x = _rng.gauss(0, 1)
-                v = 1.0 + c * x
-                if v > 0:
-                    break
-            v = v * v * v
-            u = _rng.random()
-            if u < 1.0 - 0.0331 * (x * x) * (x * x):
-                return d * v
-            if math.log(max(u, 1e-300)) < 0.5 * x * x + d * (1.0 - v + math.log(max(v, 1e-300))):
-                return d * v
-        return d
+    def _mean(arm: dict[str, Any]) -> float:
+        return arm["a"] / (arm["a"] + arm["b"])
 
-    def _thompson_sample(self, site_ai: dict[str, Any], strategy: str) -> float:
-        thompson = site_ai.setdefault("thompson", {})
-        params = thompson.setdefault(strategy, {"alpha": 1.0, "beta": 1.0})
-        x = self._gamma_sample(params["alpha"])
-        y = self._gamma_sample(params["beta"])
-        return x / (x + y) if (x + y) > 1e-10 else 0.5
+    def _score(self, arm: dict[str, Any], value: float) -> float:
+        latency = arm.get("latency_ms")
+        penalty = 0.0 if latency is None else self.LATENCY_TIEBREAK * min(latency / 2000.0, 1.0)
+        return value - penalty
 
-    def _build_features(self, site_ai, strategy, hour, day, current_time):
-        pi2 = 2.0 * math.pi
-        hour_sin = math.sin(pi2 * hour / 24.0) * 0.5 + 0.5
-        hour_cos = math.cos(pi2 * hour / 24.0) * 0.5 + 0.5
-        day_sin = math.sin(pi2 * day / 7.0) * 0.5 + 0.5
-        day_cos = math.cos(pi2 * day / 7.0) * 0.5 + 0.5
-
-        ema = site_ai["strategy_scores"].get(strategy, {})
-        ema_success = ema.get("ema_success", 0.5)
-        ema_latency = ema.get("ema_latency", 500.0)
-        latency_norm = max(0.0, 1.0 - min(ema_latency / 2000.0, 1.0))
-
-        hour_data = site_ai["hour_matrix"].get(str(hour), {}).get(strategy)
-        temporal = 0.5
-        if hour_data:
-            total = hour_data["ok"] + hour_data["fail"]
-            if total >= 2:
-                temporal = hour_data["ok"] / total
-
-        recency = 0.0
-        for obs in reversed(site_ai.get("recent", [])):
-            if obs[0] == strategy and obs[1]:
-                age = current_time - obs[5]
-                recency = math.exp(-age / 3600.0)
-                break
-
-        strat_obs = sum(1 for obs in site_ai.get("recent", []) if obs[0] == strategy)
-        obs_norm = min(1.0, strat_obs / 10.0)
-
-        streak = 0.5
-        for obs in reversed(site_ai.get("recent", [])):
-            if obs[0] == strategy:
-                if obs[1]:
-                    streak = min(1.0, streak + 0.1)
-                else:
-                    streak = max(0.0, streak - 0.15)
-
-        return [
-            hour_sin,
-            hour_cos,
-            day_sin,
-            day_cos,
-            ema_success,
-            latency_norm,
-            temporal,
-            recency,
-            obs_norm,
-            streak,
-        ]
-
-    def _detect_drift(self, site_ai) -> float:
-        recent = site_ai.get("recent", [])
-        if len(recent) < 40:
-            return 0.0
-        window_new = recent[-20:]
-        window_old = recent[-40:-20]
-        new_ok = sum(1 for obs in window_new if obs[1])
-        old_ok = sum(1 for obs in window_old if obs[1])
-        rate_delta = abs(new_ok / 20.0 - old_ok / 20.0)
-        new_wins = Counter(obs[0] for obs in window_new if obs[1])
-        old_wins = Counter(obs[0] for obs in window_old if obs[1])
-        new_top = new_wins.most_common(1)[0][0] if new_wins else None
-        old_top = old_wins.most_common(1)[0][0] if old_wins else None
-        strat_changed = 1.0 if (new_top and old_top and new_top != old_top) else 0.0
-        return min(1.0, rate_delta * 2.0 + strat_changed * 0.3)
-
-    def _apply_drift_response(self, site_ai, drift_score: float) -> None:
-        if drift_score < 0.3:
-            return
-        self.logger.info(f"[AI] Concept drift detected (score={drift_score:.2f}), boosting exploration")
-        decay = max(0.5, 1.0 - drift_score)
-        for hour_strats in site_ai.get("hour_matrix", {}).values():
-            for strategy_data in hour_strats.values():
-                strategy_data["ok"] = int(strategy_data["ok"] * decay)
-                strategy_data["fail"] = int(strategy_data["fail"] * decay)
-        for day_strats in site_ai.get("day_matrix", {}).values():
-            for strategy_data in day_strats.values():
-                strategy_data["ok"] = int(strategy_data["ok"] * decay)
-                strategy_data["fail"] = int(strategy_data["fail"] * decay)
-        flatten = max(0.3, 1.0 - drift_score)
-        for params in site_ai.get("thompson", {}).values():
-            params["alpha"] = max(1.0, params["alpha"] * flatten)
-            params["beta"] = max(1.0, params["beta"] * flatten)
-        for ema in site_ai.get("strategy_scores", {}).values():
-            ema["ema_success"] = ema["ema_success"] * 0.7 + 0.5 * 0.3
-        site_ai["_last_drift_time"] = time.time()
-        site_ai["_drift_score"] = drift_score
-
-    def _compute_global_reputation(self):
-        global_stats: dict[str, dict[str, int]] = {}
-        for site_ai in self._data.get("sites", {}).values():
-            for obs in site_ai.get("recent", []):
-                stats = global_stats.setdefault(obs[0], {"ok": 0, "fail": 0})
-                if obs[1]:
-                    stats["ok"] += 1
-                else:
-                    stats["fail"] += 1
-        priors = {}
-        for strategy, stats in global_stats.items():
-            priors[strategy] = {
-                "alpha": 1.0 + stats["ok"] * 0.1,
-                "beta": 1.0 + stats["fail"] * 0.1,
-            }
-        self._data["global_priors"] = priors
-        return priors
+    @staticmethod
+    def _confidence(arm: dict[str, Any], prior: tuple[float, float]) -> float:
+        evidence = (arm["a"] + arm["b"]) - (prior[0] + prior[1])
+        return round(max(0.0, min(1.0, evidence / 10.0)), 2)
 
     def record(self, site_name: str, strategy: str, success: bool, elapsed_ms: float) -> None:
         now = datetime.now()
-        hour = str(now.hour)
-        day = str(now.weekday())
         site_ai = self._get_site_ai(site_name)
-
-        hm = site_ai["hour_matrix"].setdefault(hour, {})
-        hs = hm.setdefault(strategy, {"ok": 0, "fail": 0, "total_ms": 0.0})
+        self._discount_site(site_ai)
+        arm = self._arm(site_ai, strategy)
         if success:
-            hs["ok"] += 1
-            hs["total_ms"] += elapsed_ms
+            arm["a"] += 1.0
+            if elapsed_ms and elapsed_ms > 0:
+                previous = arm.get("latency_ms")
+                arm["latency_ms"] = round(
+                    elapsed_ms if previous is None else previous * 0.8 + elapsed_ms * 0.2, 1
+                )
         else:
-            hs["fail"] += 1
+            arm["b"] += 1.0
+        arm["n"] = arm.get("n", 0) + 1
+        site_ai["total_observations"] = site_ai.get("total_observations", 0) + 1
 
-        dm = site_ai["day_matrix"].setdefault(day, {})
-        ds = dm.setdefault(strategy, {"ok": 0, "fail": 0})
-        if success:
-            ds["ok"] += 1
-        else:
-            ds["fail"] += 1
-
-        site_ai["recent"].append([strategy, success, round(elapsed_ms, 1), int(hour), int(day), time.time()])
+        # Kept for training (under-explored strategies) and the dashboard heatmap only;
+        # the hour of day is not used for ranking.
+        site_ai["recent"].append([strategy, bool(success), round(elapsed_ms or 0.0, 1), now.hour, now.weekday(), time.time()])
         if len(site_ai["recent"]) > self.ring_buffer_size:
             site_ai["recent"] = site_ai["recent"][-self.ring_buffer_size:]
-
-        ema = site_ai["strategy_scores"].setdefault(strategy, {"ema_success": 0.5, "ema_latency": 500.0})
-        alpha = 0.2
-        ema["ema_success"] = ema["ema_success"] * (1 - alpha) + (1.0 if success else 0.0) * alpha
-        ema["ema_latency"] = ema["ema_latency"] * (1 - alpha) + elapsed_ms * alpha
-
-        site_ai["total_observations"] += 1
-
-        ts = site_ai.setdefault("thompson", {})
-        params = ts.setdefault(strategy, {"alpha": 1.0, "beta": 1.0})
-        if success:
-            params["alpha"] += 1.0
-        else:
-            params["beta"] += 1.0
-        if site_ai["total_observations"] % self.thompson_decay_interval == 0:
-            for sp in ts.values():
-                sp["alpha"] = max(1.0, sp["alpha"] * self.decay_factor)
-                sp["beta"] = max(1.0, sp["beta"] * self.decay_factor)
-
-        group = STRATEGY_TO_GROUP.get(strategy)
-        if group:
-            siblings = [s for s in STRATEGY_GROUPS[group] if s != strategy]
-            for sibling in siblings:
-                sibling_params = ts.setdefault(sibling, {"alpha": 1.0, "beta": 1.0})
-                if success:
-                    sibling_params["alpha"] += 0.2
-                else:
-                    sibling_params["beta"] += 0.2
-
-        gw = self._data["global_weights"].setdefault(
-            strategy,
-            {"w_success": 1.0, "w_latency": 1.0, "w_recency": 1.0, "w_temporal": 1.0},
-        )
-        if success:
-            gw["w_success"] = min(3.0, gw["w_success"] + 0.01)
-            if elapsed_ms < 300:
-                gw["w_latency"] = min(3.0, gw["w_latency"] + 0.005)
-        else:
-            gw["w_success"] = max(0.1, gw["w_success"] - 0.02)
-
-        try:
-            nn = self._get_nn(site_name)
-            features = self._build_features(site_ai, strategy, int(hour), int(day), time.time())
-            _, cache = nn.forward(features)
-            nn.backward(cache, [1.0 if success else 0.0])
-        except Exception:
-            pass
+        hour_cell = site_ai["hour_matrix"].setdefault(str(now.hour), {}).setdefault(strategy, {"ok": 0, "fail": 0})
+        hour_cell["ok" if success else "fail"] += 1
 
         self._dirty = True
         self._save_if_needed()
 
-    def predict(self, site_name: str, count_as_prediction: bool = False):
+    def record_connection(self, site_name: str, first_try: bool, connect_ms: float | None) -> None:
+        """Outcome of one live connection: did the first strategy tried work, and how
+        long did it take until the server answered (None when every strategy failed)."""
         site_ai = self._get_site_ai(site_name)
-        now = datetime.now()
-        hour = now.hour
-        day = now.weekday()
-        current_time = time.time()
+        bucket = site_ai.setdefault("connections", {"total": 0.0, "first_try_ok": 0.0, "avg_connect_ms": None})
+        # Discounted like the arms so the per-site rate reflects recent behaviour.
+        bucket["total"] = bucket["total"] * self.discount + 1.0
+        bucket["first_try_ok"] = bucket["first_try_ok"] * self.discount + (1.0 if first_try else 0.0)
+        if connect_ms is not None:
+            prev = bucket.get("avg_connect_ms")
+            bucket["avg_connect_ms"] = round(connect_ms if prev is None else prev * 0.9 + connect_ms * 0.1, 1)
+        totals = self._data.setdefault("connections", {"total": 0, "first_try_ok": 0, "avg_connect_ms": None})
+        totals["total"] += 1
+        totals["first_try_ok"] += 1 if first_try else 0
+        if connect_ms is not None:
+            prev = totals.get("avg_connect_ms")
+            totals["avg_connect_ms"] = round(connect_ms if prev is None else prev * 0.9 + connect_ms * 0.1, 1)
+        self._dirty = True
 
-        if site_ai["total_observations"] < self.min_samples:
+    def predict(self, site_name: str, count_as_prediction: bool = False, *, explore: bool = False):
+        """Rank automatic strategies for a site.
+
+        Returns ``[(strategy, score, confidence), ...]`` best first, or None until the
+        site has ``min_samples`` observations. ``explore=True`` ranks by Thompson
+        samples instead of posterior means (for background probes only).
+        """
+        site_ai = self._data.get("sites", {}).get(site_name)
+        if not site_ai or site_ai.get("total_observations", 0) < self.min_samples:
             return None
+        return self._ranked(site_ai, explore=explore)
 
-        last_drift_check = site_ai.get("_last_drift_check", 0)
-        if current_time - last_drift_check > self.drift_check_interval:
-            site_ai["_last_drift_check"] = current_time
-            drift = self._detect_drift(site_ai)
-            if drift > 0.3:
-                self._apply_drift_response(site_ai, drift)
+    def rank(self, site_name: str) -> list[str]:
+        """Exploit ordering for live traffic; works from the first observation."""
+        site_ai = self._data.get("sites", {}).get(site_name) or self._new_site()
+        return [row[0] for row in self._ranked(site_ai, explore=False)]
 
-        scores = []
-        nn = self._get_nn(site_name)
+    def _ranked(self, site_ai: dict[str, Any], *, explore: bool) -> list[tuple[str, float, float]]:
+        rows = []
+        arms = site_ai.get("arms", {})
+        for position, strategy in enumerate(AUTO_STRATEGY_ORDER):
+            prior = self._prior(strategy)
+            arm = arms.get(strategy) or {"a": prior[0], "b": prior[1], "latency_ms": None, "n": 0}
+            value = self.rng.betavariate(arm["a"], arm["b"]) if explore else self._mean(arm)
+            # Catalog position is the final, stable tie-break.
+            rows.append((strategy, round(self._score(arm, value), 4), self._confidence(arm, prior), -position))
+        rows.sort(key=lambda row: (row[1], row[3]), reverse=True)
+        return [row[:3] for row in rows]
 
-        for strat in STRATEGY_ORDER:
-            linear_score, confidence = self._score_strategy_linear(site_ai, strat, hour, day, current_time)
-            nn_score = 0.5
-            try:
-                features = self._build_features(site_ai, strat, hour, day, current_time)
-                nn_out, _ = nn.forward(features)
-                nn_score = nn_out[0]
-            except Exception:
-                pass
+    def _compute_global_reputation(self):
+        """Cross-site prior for strategies a site has not tried yet (weak by design)."""
+        global_stats: dict[str, dict[str, float]] = {}
+        for site_ai in self._data.get("sites", {}).values():
+            for strategy, arm in site_ai.get("arms", {}).items():
+                stats = global_stats.setdefault(strategy, {"ok": 0.0, "fail": 0.0})
+                stats["ok"] += max(0.0, arm["a"] - 1.0)
+                stats["fail"] += max(0.0, arm["b"] - 1.0)
+        priors = {}
+        for strategy, stats in global_stats.items():
+            total = stats["ok"] + stats["fail"]
+            if total <= 0:
+                continue
+            strength = min(self.PRIOR_STRENGTH_CAP, total)
+            rate = stats["ok"] / total
+            priors[strategy] = {"alpha": 1.0 + strength * rate, "beta": 1.0 + strength * (1.0 - rate)}
+        self._data["global_priors"] = priors
+        return priors
 
-            blend = min(1.0, site_ai["total_observations"] / 100.0)
-            base_score = blend * nn_score + (1.0 - blend) * linear_score
-            thompson = self._thompson_sample(site_ai, strat)
-            combined = 0.6 * base_score + 0.4 * thompson
-            scores.append((strat, round(combined, 4), round(confidence, 2)))
-
-        scores.sort(key=lambda x: x[1], reverse=True)
-
-        if len(scores) > 1 and count_as_prediction:
-            linear_top = max(
-                STRATEGY_ORDER,
-                key=lambda s: self._score_strategy_linear(site_ai, s, hour, day, current_time)[0],
-            )
-            if scores[0][0] != linear_top:
-                self.logger.debug(f"[AI] Exploring: {scores[0][0]} for {site_name} (Thompson)")
-
-        if count_as_prediction:
-            self._data["total_predictions"] = self._data.get("total_predictions", 0) + 1
-            self._data.setdefault("_last_predictions", {})[site_name] = scores[0][0]
-
-        return scores
-
-    def _score_strategy_linear(self, site_ai, strategy, hour, day, current_time):
-        gw = self._data["global_weights"].get(
-            strategy,
-            {"w_success": 1.0, "w_latency": 1.0, "w_recency": 1.0, "w_temporal": 1.0},
-        )
-        ema = site_ai["strategy_scores"].get(strategy, {})
-        ema_success = ema.get("ema_success", 0.5)
-        ema_latency = ema.get("ema_latency", 500.0)
-
-        temporal_score = 0.5
-        hour_data = site_ai["hour_matrix"].get(str(hour), {}).get(strategy)
-        if hour_data:
-            total = hour_data["ok"] + hour_data["fail"]
-            if total >= 2:
-                temporal_score = hour_data["ok"] / total
-
-        day_data = site_ai["day_matrix"].get(str(day), {}).get(strategy)
-        day_score = 0.5
-        if day_data:
-            total = day_data["ok"] + day_data["fail"]
-            if total >= 2:
-                day_score = day_data["ok"] / total
-        temporal_combined = temporal_score * 0.7 + day_score * 0.3
-
-        latency_score = max(0.0, 1.0 - (ema_latency / 2000.0))
-
-        recency_score = 0.0
-        for obs in reversed(site_ai.get("recent", [])):
-            if obs[0] == strategy and obs[1]:
-                age = current_time - obs[5]
-                recency_score = math.exp(-age / 3600.0)
-                break
-
-        strat_obs = sum(1 for obs in site_ai.get("recent", []) if obs[0] == strategy)
-        confidence = min(1.0, strat_obs / 10.0)
-
-        score = (
-            gw["w_success"] * ema_success * 0.35
-            + gw["w_temporal"] * temporal_combined * 0.30
-            + gw["w_latency"] * latency_score * 0.20
-            + gw["w_recency"] * recency_score * 0.15
-        )
-        score *= 0.8 + 0.2 * confidence
-        return round(score, 4), round(confidence, 2)
-
-    def record_prediction_result(self, site_name: str, winning_strategy: str) -> None:
-        last_preds = self._data.get("_last_predictions", {})
-        predicted = last_preds.get(site_name)
-        if predicted and predicted == winning_strategy:
-            self._data["correct_predictions"] = self._data.get("correct_predictions", 0) + 1
-
+    # ------------------------------------------------------------------ reporting
     def get_accuracy(self) -> float:
-        total = self._data.get("total_predictions", 0)
-        correct = self._data.get("correct_predictions", 0)
-        if total == 0:
+        """Share of live connections where the first strategy tried worked (percent)."""
+        totals = self._data.get("connections", {})
+        total = totals.get("total", 0)
+        if not total:
             return 0.0
-        return round((correct / total) * 100, 1)
+        return round(totals.get("first_try_ok", 0) / total * 100, 1)
 
     def get_site_insights(self, site_name: str):
         site_ai = self._data.get("sites", {}).get(site_name)
-        if not site_ai or site_ai["total_observations"] < self.min_samples:
-            return None
         predictions = self.predict(site_name)
-        if not predictions:
+        if not site_ai or not predictions:
             return None
-        top = predictions[0]
-        ts = site_ai.get("thompson", {}).get(top[0], {"alpha": 1, "beta": 1})
-        insights = {
-            "ai_active": True,
-            "predicted_strategy": top[0],
-            "confidence": top[1],
-            "score": top[2],
-            "total_observations": site_ai["total_observations"],
-            "top_3": [{"strategy": p[0], "score": p[1], "confidence": p[2]} for p in predictions[:3]],
-            "thompson_alpha": round(ts["alpha"], 1),
-            "thompson_beta": round(ts["beta"], 1),
-            "drift_score": round(site_ai.get("_drift_score", 0.0), 2),
-            "nn_active": site_name in self._nn_cache,
-        }
+        top_name = predictions[0][0]
+        top_arm = self._arm(site_ai, top_name)
+        connections = site_ai.get("connections", {})
+        conn_total = connections.get("total", 0.0)
         hour_best = {}
         for hour, strats in site_ai.get("hour_matrix", {}).items():
-            best_strat, best_rate = None, 0
+            best_strat, best_rate = None, 0.0
             for strategy, data in strats.items():
                 total = data["ok"] + data["fail"]
-                if total >= 2:
-                    rate = data["ok"] / total
-                    if rate > best_rate:
-                        best_rate = rate
-                        best_strat = strategy
+                if total >= 2 and data["ok"] / total > best_rate:
+                    best_rate = data["ok"] / total
+                    best_strat = strategy
             if best_strat:
                 hour_best[hour] = {"strategy": best_strat, "rate": round(best_rate, 2)}
-        insights["hour_best"] = hour_best
-        return insights
-
-    def get_global_stats(self) -> dict[str, Any]:
-        total_obs = sum(s.get("total_observations", 0) for s in self._data.get("sites", {}).values())
-        total_success = sum(
-            sum(1 for obs in s.get("recent", []) if obs[1])
-            for s in self._data.get("sites", {}).values()
-        )
-        nn_sites = len(self._nn_cache)
-        drift_active = sum(
-            1 for s in self._data.get("sites", {}).values()
-            if s.get("_drift_score", 0) > 0.3
-        )
         return {
-            "total_predictions": self._data.get("total_predictions", 0),
-            "correct_predictions": self._data.get("correct_predictions", 0),
-            "accuracy": self.get_accuracy(),
-            "sites_with_data": sum(
-                1
-                for s in self._data.get("sites", {}).values()
-                if s.get("total_observations", 0) >= self.min_samples
-            ),
-            "total_observations": total_obs,
-            "total_success": total_success,
-            "success_rate": round((total_success / total_obs * 100), 1) if total_obs > 0 else 0,
-            "global_weights": self._data.get("global_weights", {}),
-            "nn_active_sites": nn_sites,
-            "drift_active": drift_active,
-            "engine_version": 3,
+            "ai_active": True,
+            "predicted_strategy": top_name,
+            # Expected chance that the top strategy connects (posterior mean).
+            "confidence": round(self._mean(top_arm), 2),
+            "score": predictions[0][1],
+            "total_observations": site_ai.get("total_observations", 0),
+            "top_3": [{"strategy": p[0], "score": p[1], "confidence": p[2]} for p in predictions[:3]],
+            "thompson_alpha": round(top_arm["a"], 1),
+            "thompson_beta": round(top_arm["b"], 1),
+            "first_try_rate": round(connections.get("first_try_ok", 0.0) / conn_total * 100, 1) if conn_total else None,
+            "avg_connect_ms": connections.get("avg_connect_ms"),
+            "hour_best": hour_best,
         }
 
-    def reset(self) -> None:
-        self._data = self._default_data()
-        self._nn_cache.clear()
-        self._dirty = True
-        self._do_save()
-        self.logger.info("[AI v3] Model reset")
+    def get_global_stats(self) -> dict[str, Any]:
+        sites = self._data.get("sites", {})
+        total_obs = sum(s.get("total_observations", 0) for s in sites.values())
+        total_success = sum(sum(1 for obs in s.get("recent", []) if obs[1]) for s in sites.values())
+        recent_total = sum(len(s.get("recent", [])) for s in sites.values())
+        totals = self._data.get("connections", {})
+        return {
+            # "accuracy" is kept as the key the dashboard reads; it is the first-try rate.
+            "accuracy": self.get_accuracy(),
+            "first_try_rate": self.get_accuracy(),
+            "total_predictions": totals.get("total", 0),
+            "correct_predictions": totals.get("first_try_ok", 0),
+            "avg_connect_ms": totals.get("avg_connect_ms"),
+            "sites_with_data": sum(1 for s in sites.values() if s.get("total_observations", 0) >= self.min_samples),
+            "total_observations": total_obs,
+            "total_success": total_success,
+            "success_rate": round(total_success / recent_total * 100, 1) if recent_total else 0,
+            "discount": self.discount,
+            "engine_version": self.VERSION,
+        }

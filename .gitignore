@@ -12,8 +12,14 @@ bypass.log.*
 stats.json
 strategy_cache.json
 ai_strategy.json
+ai_strategy.v*.bak.json
 proxy_state.json
+linux_proxy_state.json
 privacy_sites*.txt
+
+# Virtual environments (Linux launcher creates .venv)
+.venv/
+venv/
 
 # Build output
 build/

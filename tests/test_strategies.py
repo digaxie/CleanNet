@@ -6,7 +6,7 @@ from cleannet.strategies import (
     _find_sni_offset,
     build_strategy_funcs,
 )
-from cleannet.strategy_catalog import STRATEGY_ORDER
+from cleannet.strategy_catalog import AUTO_STRATEGY_ORDER, RETIRED_STRATEGIES, STRATEGY_ORDER
 from cleannet.training import build_client_hello
 
 
@@ -111,6 +111,9 @@ RECORD_PRESERVING = [
     "tls_version_mix",
     "tls_random_pad_frag",
     "tcp_window_frag",
+    "sni_multi_record",
+    "tls_record_tcp_split",
+    "tls_record_long_delay",
 ]
 
 # Strategies that only split the byte stream across TCP writes.
@@ -122,6 +125,7 @@ STREAM_PRESERVING = [
     "fragment_heavy",
     "slow_drip",
     "header_fragment",
+    "sni_tcp_drip",
 ]
 
 
@@ -164,6 +168,103 @@ class StrategyIntegrityTests(unittest.IsolatedAsyncioTestCase):
         sni_off = _find_sni_offset(out)
         self.assertEqual(out[sni_off:sni_off + 2], b"\x00\x00")
         self.assertIn(b"discord.com", out)
+
+
+
+def _records(stream):
+    pos, out = 0, []
+    while pos + 5 <= len(stream):
+        length = int.from_bytes(stream[pos + 3:pos + 5], "big")
+        out.append(stream[pos:pos + 5 + length])
+        pos += 5 + length
+    return out
+
+
+class AutoStrategySafetyTests(unittest.IsolatedAsyncioTestCase):
+    def _funcs(self):
+        return build_strategy_funcs(StrategyRuntimeContext(record_fragments=lambda _c: None, sleep=_sleep))
+
+    async def test_every_auto_strategy_keeps_client_hello_content(self):
+        # TLS hashes the ClientHello into the handshake transcript. A strategy that
+        # changes its *content* still gets a ServerHello (and was scored a success)
+        # but the browser's connection fails at Finished. Automatic strategies may
+        # only change framing and timing.
+        funcs = self._funcs()
+        for host in ("discord.com", "a.b"):
+            hello = build_client_hello(host)
+            for name in AUTO_STRATEGY_ORDER:
+                with self.subTest(strategy=name, host=host):
+                    writer = _Writer()
+                    await funcs[name](writer, hello)
+                    self.assertEqual(_handshake_bytes(b"".join(writer.chunks)), hello[5:])
+
+    async def test_retired_content_changing_strategies_are_detected(self):
+        # Guards the safety test above: it must flag the strategies we retired for
+        # changing content, otherwise it would not protect anything.
+        funcs = self._funcs()
+        hello = build_client_hello("discord.com")
+        for name in ("sni_padding", "dot_shuffle", "reverse_frag", "tls_frag_overlap"):
+            with self.subTest(strategy=name):
+                writer = _Writer()
+                await funcs[name](writer, hello)
+                self.assertNotEqual(_handshake_bytes(b"".join(writer.chunks)), hello[5:])
+
+    def test_auto_order_excludes_retired(self):
+        self.assertEqual(set(AUTO_STRATEGY_ORDER) & RETIRED_STRATEGIES, set())
+        self.assertTrue(RETIRED_STRATEGIES <= set(STRATEGY_ORDER))
+        for name in ("sni_multi_record", "sni_tcp_drip", "tls_record_tcp_split", "tls_record_long_delay"):
+            self.assertIn(name, AUTO_STRATEGY_ORDER)
+
+    async def test_sni_multi_record_limits_hostname_bytes_per_record(self):
+        hello = build_client_hello("gateway.discord.gg")
+        writer = _Writer()
+
+        await self._funcs()["sni_multi_record"](writer, hello)
+        records = _records(b"".join(writer.chunks))
+
+        self.assertGreater(len(records), 5)
+        self.assertFalse(any(b"disc" in rec or b"cord" in rec for rec in records))
+
+    async def test_sni_tcp_drip_sends_hostname_in_two_byte_writes(self):
+        hello = build_client_hello("discord.com")
+        writer = _Writer()
+
+        await self._funcs()["sni_tcp_drip"](writer, hello)
+
+        self.assertFalse(any(b"disc" in chunk for chunk in writer.chunks))
+        self.assertEqual(b"".join(writer.chunks), hello)
+
+    async def test_tls_record_tcp_split_splits_on_both_layers(self):
+        hello = build_client_hello("discord.com")
+        writer = _Writer()
+
+        await self._funcs()["tls_record_tcp_split"](writer, hello)
+
+        self.assertEqual(len(writer.chunks), 4)
+        self.assertEqual(len(_records(b"".join(writer.chunks))), 2)
+        self.assertEqual(len(writer.chunks[0]), 5)  # first record header alone
+
+    async def test_tls_record_long_delay_pauses_between_records(self):
+        delays = []
+
+        async def record_sleep(seconds):
+            delays.append(seconds)
+
+        funcs = build_strategy_funcs(StrategyRuntimeContext(record_fragments=lambda _c: None, sleep=record_sleep))
+        writer = _Writer()
+
+        await funcs["tls_record_long_delay"](writer, build_client_hello("discord.com"))
+
+        self.assertEqual(delays, [0.3])
+        self.assertEqual(len(writer.chunks), 2)
+
+    async def test_new_strategies_pass_non_tls_data_through(self):
+        funcs = self._funcs()
+        for name in ("sni_multi_record", "sni_tcp_drip", "tls_record_tcp_split", "tls_record_long_delay"):
+            with self.subTest(strategy=name):
+                writer = _Writer()
+                await funcs[name](writer, b"GET / HTTP/1.1\r\n\r\n")
+                self.assertEqual(b"".join(writer.chunks), b"GET / HTTP/1.1\r\n\r\n")
 
 
 if __name__ == "__main__":

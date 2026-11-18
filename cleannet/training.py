@@ -8,6 +8,9 @@ import random
 import time
 from typing import Any, Awaitable, Callable
 
+from .proxy_engine import open_connection_dual_stack
+from .tls_probe import STATUS_FAILED, ProbeResult, verified_probe
+
 
 Reader = Any
 Writer = Any
@@ -31,8 +34,12 @@ class TrainingRuntimeContext:
     get_bypass_ip: Callable[[str], str | None]
     resolve_domain_doh: Callable[[str], list[str]]
     hash_host: Callable[[str], str]
-    open_connection: Callable[..., Awaitable[tuple[Reader, Writer]]] = asyncio.open_connection
+    open_connection: Callable[..., Awaitable[tuple[Reader, Writer]]] = open_connection_dual_stack
     sleep: Callable[[float], Awaitable[None]] = asyncio.sleep
+    # (open_connection, strategy, host, ip) -> ProbeResult; a full, verified TLS handshake.
+    tls_probe: Callable[..., Awaitable[ProbeResult]] = verified_probe
+    # (site, status, strategy=..., detail=..., source=...) -> None
+    record_verification: Callable[..., None] = lambda *_args, **_kwargs: None
 
 
 def close_writer(writer: Writer | None) -> None:
@@ -85,25 +92,26 @@ class TrainingManager:
     def __init__(self, context: TrainingRuntimeContext):
         self.ctx = context
 
-    async def probe_strategy(self, test_ip: str, test_domain: str, strat_name: str) -> tuple[bool, float]:
-        """Single strategy probe: connect, send ClientHello through strategy, check TLS response."""
-        writer = None
+    async def probe(self, test_ip: str, test_domain: str, strat_name: str) -> ProbeResult:
+        """Complete a real, verified TLS handshake with ``test_domain`` through a strategy.
+
+        The old probe only checked that the first reply byte was 0x16. That accepted
+        DPI block pages (their own certificate) and strategies that corrupt the
+        ClientHello content, so training taught the AI to prefer broken strategies.
+        """
         try:
-            reader, writer = await asyncio.wait_for(
-                self.ctx.open_connection(test_ip, 443),
-                timeout=8,
+            return await self.ctx.tls_probe(
+                self.ctx.open_connection,
+                self.ctx.strategy_funcs[strat_name],
+                test_domain,
+                test_ip,
             )
-            hello = build_client_hello(test_domain)
-            start_t = time.perf_counter()
-            await self.ctx.strategy_funcs[strat_name](writer, hello)
-            server_reply = await asyncio.wait_for(reader.read(8192), timeout=8)
-            elapsed_ms = round((time.perf_counter() - start_t) * 1000, 1)
-            success = bool(server_reply and len(server_reply) >= 2 and server_reply[0] == 0x16)
-            return success, elapsed_ms if success else 0
-        except Exception:
-            return False, 0
-        finally:
-            close_writer(writer)
+        except Exception as exc:
+            return ProbeResult(STATUS_FAILED, 0.0, f"probe error: {exc}")
+
+    async def probe_strategy(self, test_ip: str, test_domain: str, strat_name: str) -> tuple[bool, float]:
+        result = await self.probe(test_ip, test_domain, strat_name)
+        return result.success, result.elapsed_ms if result.success else 0
 
     async def self_training_loop(self) -> None:
         """Background task: periodically probe underexplored strategies for all sites."""
@@ -162,7 +170,11 @@ class TrainingManager:
                         if not self.ctx.get_running():
                             break
                         self.ctx.self_train_state["last_strategy"] = strat_name
-                        success, elapsed_ms = await self.probe_strategy(test_ip, test_domain, strat_name)
+                        result = await self.probe(test_ip, test_domain, strat_name)
+                        success, elapsed_ms = result.success, result.elapsed_ms
+                        self.ctx.record_verification(
+                            site_name, result.status, strategy=strat_name, detail=result.detail, source="probe"
+                        )
                         self.ctx.ai_engine.record(site_name, strat_name, success, elapsed_ms)
                         self.ctx.self_train_state["total_probes"] += 1
                         if success:
@@ -171,8 +183,8 @@ class TrainingManager:
                             self.ctx.logger.info(f"[SELF-TRAIN] {site_name}: {strat_name} OK ({elapsed_ms}ms)")
                         else:
                             self.ctx.strategy_cache.record_failure(site_name, strat_name)
-                            self.ctx.self_train_state["last_result"] = f"{strat_name} FAIL"
-                            self.ctx.logger.info(f"[SELF-TRAIN] {site_name}: {strat_name} FAIL")
+                            self.ctx.self_train_state["last_result"] = f"{strat_name} {result.status.upper()}"
+                            self.ctx.logger.info(f"[SELF-TRAIN] {site_name}: {strat_name} {result.status} ({result.detail})")
                         await self.ctx.sleep(0.5 if intensity == "nonstop" else 1.0)
                 self.ctx.self_train_state["running"] = False
             except Exception as e:
@@ -189,7 +201,7 @@ class TrainingManager:
 
         test_ip = self.ctx.get_bypass_ip(test_domain)
         if not test_ip or test_ip == test_domain.lower():
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             try:
                 ips = await loop.run_in_executor(None, self.ctx.resolve_domain_doh, test_domain)
                 if ips:
@@ -202,7 +214,7 @@ class TrainingManager:
             except Exception:
                 return
 
-        strat_list = list(self.ctx.strategy_funcs.keys())
+        strat_list = [s for s in self.ctx.strategy_order if s in self.ctx.strategy_funcs]
         total = len(strat_list)
         results = []
         self.ctx.training_state["progress"][site_name] = {
@@ -220,17 +232,23 @@ class TrainingManager:
             self.ctx.training_state["progress"][site_name]["tested"] = idx
             self.ctx.training_state["progress"][site_name]["pct"] = int((idx / total) * 100)
 
-            success, elapsed_ms = await self.probe_strategy(test_ip, test_domain, strat_name)
+            result = await self.probe(test_ip, test_domain, strat_name)
+            success, elapsed_ms = result.success, result.elapsed_ms
+            self.ctx.record_verification(
+                site_name, result.status, strategy=strat_name, detail=result.detail, source="probe"
+            )
             results.append({
                 "strategy": strat_name,
                 "success": success,
                 "ms": elapsed_ms if success else 0,
+                "status": result.status,
+                "detail": result.detail,
             })
 
             if success:
-                self.ctx.logger.info(f"[TRAIN] {site_name}: {strat_name} OK ({elapsed_ms}ms)")
+                self.ctx.logger.info(f"[TRAIN] {site_name}: {strat_name} {result.status} ({elapsed_ms}ms)")
             else:
-                self.ctx.logger.debug(f"[TRAIN] {site_name}: {strat_name} FAIL")
+                self.ctx.logger.debug(f"[TRAIN] {site_name}: {strat_name} {result.status} ({result.detail})")
 
             await self.ctx.sleep(0.5)
 
@@ -242,12 +260,16 @@ class TrainingManager:
         }
 
         successful = [r for r in results if r["success"]]
+        intercepted = sum(1 for r in results if r.get("status") == "intercepted")
+        verified = sum(1 for r in results if r.get("status") == "verified")
         if successful:
             best = min(successful, key=lambda r: r["ms"])
             self.ctx.training_state["results"][site_name] = {
                 "best_strategy": best["strategy"],
                 "best_ms": best["ms"],
                 "success_count": len(successful),
+                "verified_count": verified,
+                "intercepted_count": intercepted,
                 "total_tested": total,
                 "all_results": results,
             }
@@ -260,10 +282,18 @@ class TrainingManager:
                 "best_strategy": None,
                 "best_ms": 0,
                 "success_count": 0,
+                "verified_count": 0,
+                "intercepted_count": intercepted,
                 "total_tested": total,
                 "all_results": results,
             }
-            self.ctx.logger.warning(f"[TRAIN] {site_name}: no strategies succeeded")
+            if intercepted:
+                self.ctx.logger.warning(
+                    f"[TRAIN] {site_name}: no strategies succeeded; {intercepted} were intercepted by DPI "
+                    "(certificate for another host)"
+                )
+            else:
+                self.ctx.logger.warning(f"[TRAIN] {site_name}: no strategies succeeded")
 
     async def train_all_sites(self) -> None:
         """Run strategy training for all enabled sites."""
