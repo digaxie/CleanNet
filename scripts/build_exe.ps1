@@ -18,6 +18,12 @@ try {
     }
     Start-Sleep -Seconds 2
 
+    # py_compile above leaves __pycache__ next to the sources, and the whole cleannet
+    # folder is bundled as data. Those .pyc files embed absolute build paths
+    # (C:\Users\<name>\...), so remove them before packaging.
+    Get-ChildItem -LiteralPath (Join-Path $root "cleannet") -Recurse -Directory -Filter "__pycache__" |
+        Remove-Item -Recurse -Force
+
     $iconIco = Join-Path $root "assets\cleannet_app.ico"
     $iconPng = Join-Path $root "assets\cleannet_app.png"
     if (-not (Test-Path -LiteralPath $iconIco) -and (Test-Path -LiteralPath $iconPng)) {
