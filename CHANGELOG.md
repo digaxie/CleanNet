@@ -1,5 +1,17 @@
 ﻿# Changelog
 
+## 2.1.5 - 2026-11-18
+
+Security and reliability fix release.
+
+- **Security:** the local dashboard API now rejects requests from other websites (cross-site requests) and DNS-rebinding hosts. Previously any website open in the browser could change CleanNet's settings, remove sites or start the administrator prompt of the Xbox/Store fix. The Xbox/Store fix script is now written to a unique temporary file, and values shown in the dashboard are escaped.
+- Strategies now receive the complete TLS ClientHello even when it arrives in several pieces (common with post-quantum key exchange in current browsers); before, split greetings were re-framed incorrectly and the connection failed.
+- Large HTTP request headers, IPv6 connection targets and keep-alive requests through the plain HTTP proxy are handled correctly.
+- The dashboard no longer pauses all proxied traffic every few seconds while the network-connections list refreshes.
+- Settings files are saved atomically; a config file saved with a UTF-8 BOM (Notepad, PowerShell) is accepted, and a damaged config is kept as a backup instead of being overwritten.
+- Adding a site whose name already exists merges domains instead of replacing the site; addresses like `https://www.example.com/path` are cleaned up; imported configs are validated.
+- Background health checks keep running after an unexpected error; autostart from the packaged EXE uses the correct command.
+
 ## 2.1.4 - 2026-07-09
 
 - Fixed non-configured (passthrough) sites such as YouTube and Kick failing with "connection timed out" errors on networks that advertise IPv6 but cannot actually route it — a common state on half-configured ISP modems. CleanNet connected to such hosts by hostname, the operating system offered the IPv6 address first, and the connection hung on the dead IPv6 route until CleanNet's 10-second connect timeout expired, so the IPv4 address was never tried. Browsers hide this network condition with their own Happy Eyeballs logic, which is why the same sites opened fine without the proxy. Upstream connections now use Happy Eyeballs (RFC 8305): IPv6 and IPv4 are attempted with a 250 ms stagger and the first one to connect wins. Sites that only publish IPv4 addresses were never affected, and nothing changes on networks with working IPv6.
