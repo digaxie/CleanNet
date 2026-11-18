@@ -1,6 +1,6 @@
 ﻿# Changelog
 
-## Unreleased
+## 2.2.0 - Beta (not yet released)
 
 - **Verified strategy success.** Training, self-training and the site test now complete a real TLS handshake (certificate, hostname and Finished checks) through each strategy. DPI block pages that answer with their own certificate are reported as "DPI intercepted" instead of success, and live connections the browser rejects right after a "successful" strategy are re-counted as failures. The dashboard shows a verification badge per site.
 - **New dashboard.** Rebuilt around what users need: an Overview that answers "am I protected?" and lists what needs attention with one-click fixes, a Sites page with an add-site wizard and a detail panel per site (verification, test, strategy, domains, CDN finder), Activity (live connections, latency, results, logs, per-app exclusions), the Smart engine and Settings. Light, dark and system themes, mobile layout with bottom navigation, deep links, keyboard focus states, and complete English, Turkish (now with proper characters) and German text. Still a single local file with no external resources.

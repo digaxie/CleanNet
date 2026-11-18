@@ -63,7 +63,7 @@ class BootstrapTests(unittest.TestCase):
             self.assertEqual(runtime.paths.config_file, os.path.join(os.path.abspath(tmp), "config.json"))
             self.assertEqual(runtime.settings.local_port, 9090)
             self.assertEqual(runtime.settings.web_port, 9999)
-            self.assertEqual(runtime.dashboard_html, "<html><body>v2.1.5</body></html>")
+            self.assertEqual(runtime.dashboard_html, "<html><body>v2.2.0</body></html>")
             self.assertEqual(app.ctx.local_host, "127.0.0.1")
             self.assertEqual(app.ctx.local_port, 9090)
             self.assertEqual(app.ctx.web_port, 9999)
@@ -136,7 +136,7 @@ class MergedLayoutTests(unittest.TestCase):
 
             self.assertEqual(app.runtime.paths.source_dir, os.path.abspath(tmp))
             self.assertEqual(app.runtime.paths.data_dir, os.path.abspath(tmp))
-            self.assertEqual(app.runtime.dashboard_html, "<html><body>v2.1.5</body></html>")
+            self.assertEqual(app.runtime.dashboard_html, "<html><body>v2.2.0</body></html>")
 
 
 if __name__ == "__main__":
