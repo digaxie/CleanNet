@@ -27,7 +27,8 @@ find "$STAGE" -type d -name "__pycache__" -prune -exec rm -rf {} +
 find "$STAGE" -type f \( -name "*.pyc" -o -name "*.pyo" -o -name "*.ps1" -o -name "*.bat" -o -name "*.iss" -o -name "*.exe" -o -name "*.ico" -o -name "CleanNet.spec" \) -delete
 
 tar -czf "$ARCHIVE" -C "$DIST" "cleannet-linux-$VERSION"
-sha256sum "$ARCHIVE" > "$DIST/SHA256SUMS.txt"
+# Relative file name, so users can run `sha256sum -c SHA256SUMS.txt` next to the download.
+(cd "$DIST" && sha256sum "$(basename "$ARCHIVE")" > SHA256SUMS.txt)
 rm -rf "$STAGE"
 
 echo "[OK] Linux release: $ARCHIVE"
