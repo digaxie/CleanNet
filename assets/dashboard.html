@@ -802,7 +802,7 @@ function U(d){try{
   setMetric('iu',d.ip_updates);
   setMetric('st_try',d.strategy_tries||0);
   setMetric('st_fb',d.strategy_fallbacks||0);
-  document.getElementById('il').innerHTML=(d.ips||[]).map(i=>'<span class="ip">'+i+'</span>').join('');
+  document.getElementById('il').innerHTML=(d.ips||[]).map(i=>'<span class="ip">'+esc(i)+'</span>').join('');
   if(d.sites){
     const sC={'direct':'#34d399','host_split':'#818cf8','fragment_light':'#fbbf24','tls_record_frag':'#22d3ee','fragment_burst':'#ff9800','desync':'#a78bfa','fragment_heavy':'#f87171','sni_shuffle':'#ec4899','fake_tls_inject':'#fb923c','triple_split':'#4ade80','sni_padding':'#f472b6','reverse_frag':'#facc15','slow_drip':'#94a3b8','oob_inline':'#2dd4bf','dot_shuffle':'#c084fc','tls_multi_record':'#38bdf8','tls_mixed_delay':'#a3e635','sni_split_byte':'#e879f9','header_fragment':'#fb7185','auto':'#585e78'};
     document.getElementById('sl').innerHTML=Object.keys(d.sites).map(s=>{
@@ -816,7 +816,7 @@ function U(d){try{
       const rate=attempts>0?Math.round(sc/attempts*100):0;
       const tt=si.test;
       const pv=si.privacy;
-      let testHtml='<button class="btn btn-sm btn-ghost" onclick="testSite(\''+s+'\')" style="padding:3px 10px;font-size:9px;">'+t('test')+'</button>';
+      let testHtml='<button class="btn btn-sm btn-ghost" onclick="testSite(\''+jsArg(s)+'\')" style="padding:3px 10px;font-size:9px;">'+t('test')+'</button>';
       if(tt){
         if(tt.status==='testing')testHtml='<span class="test-ing" style="font-size:10px;">'+t('testing')+'</span>';
         else if(tt.status==='ok')testHtml='<span class="test-ok" style="font-size:10px;">'+t('test_ok')+' '+tt.ms+'ms</span>';
@@ -824,14 +824,14 @@ function U(d){try{
       }
       return '<div class="site-detail">'
         +'<div class="name">'
-        +'<div style="width:8px;height:8px;border-radius:50%;background:'+bg+';cursor:pointer;flex-shrink:0;" onclick="ts(\''+s+'\')"></div>'
-        +'<span style="cursor:pointer;color:#fff;" onclick="ts(\''+s+'\')">'+s+'</span>'
+        +'<div style="width:8px;height:8px;border-radius:50%;background:'+bg+';cursor:pointer;flex-shrink:0;" onclick="ts(\''+jsArg(s)+'\')"></div>'
+        +'<span style="cursor:pointer;color:#fff;" onclick="ts(\''+jsArg(s)+'\')">'+esc(s)+'</span>'
         +'<span style="font-size:9px;color:'+stCol+';font-weight:700;background:'+stCol+'15;padding:2px 8px;border-radius:10px;">['+strat+']</span>'
         +(si.strategy_time_ms?'<span style="font-size:9px;color:var(--text3)">'+si.strategy_time_ms+'ms</span>':'')
         +(si.ai&&si.ai.ai_active?'<span style="font-size:8px;color:var(--purple);background:var(--purple)15;padding:1px 6px;border-radius:8px;" title="'+t('ai_confidence_title')+': '+Math.round(si.ai.confidence*100)+'%">AI '+Math.round(si.ai.confidence*100)+'%</span>':'')
         +'<span style="margin-left:auto;display:flex;gap:4px;align-items:center;">'
         +testHtml
-        +'<span onclick="removeSite(\''+s+'\')" title="'+t('remove_site')+'" style="cursor:pointer;color:var(--red);opacity:.35;transition:opacity .2s;display:flex;padding:2px;" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.35"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/></svg></span>'
+        +'<span onclick="removeSite(\''+jsArg(s)+'\')" title="'+t('remove_site')+'" style="cursor:pointer;color:var(--red);opacity:.35;transition:opacity .2s;display:flex;padding:2px;" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.35"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M8 6V4a2 2 0 012-2h4a2 2 0 012 2v2"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6"/></svg></span>'
         +'</span>'
         +'</div>'
         +'<div class="meta">'
@@ -1058,7 +1058,7 @@ function renderNetworkFlows(){
     const remote=esc(f.remote_address||'')+':'+esc(String(f.remote_port||'*'));
     const entry=f.exception_entry||'';
     const action=entry&&!f.is_exception
-      ? '<button class="btn btn-sm" onclick="addNetworkException(\''+esc(entry).replace(/'/g,"\\'")+'\')">'+t('add_exception')+'</button>'
+      ? '<button class="btn btn-sm" onclick="addNetworkException(\''+jsArg(entry)+'\')">'+t('add_exception')+'</button>'
         +'<button class="btn btn-sm btn-ghost" onclick="addProcessException('+f.pid+')" style="margin-left:4px;">'+t('add_all_for_process')+'</button>'
       : '<span style="color:var(--text3);font-size:10px;">--</span>';
     return '<tr>'
@@ -1084,13 +1084,13 @@ async function addProcessException(pid){
 function renderStrategyLock(site,si){
   const current=si.locked_strategy||'auto';
   const predicted=si.ai&&si.ai.predicted_strategy?si.ai.predicted_strategy:'';
-  const safeSite=esc(site).replace(/'/g,"\\'");
+  const safeSite=jsArg(site);
   const opts=['auto'].concat(_strategyCatalog||[]).map(v=>'<option value="'+esc(v)+'" '+(v===current?'selected':'')+'>'+esc(v)+'</option>').join('');
   return '<div class="strategy-lock">'
     +'<span class="status-pill '+(current==='auto'?'':'good')+'">'+t('strategy_lock')+': '+esc(current)+'</span>'
     +'<select class="inp" id="stsel_'+safeSite+'" style="min-width:170px;padding:5px 10px;">'+opts+'</select>'
     +'<button class="btn btn-sm btn-ghost" onclick="setSiteStrategy(\''+safeSite+'\',document.getElementById(\'stsel_'+safeSite+'\').value)">'+t('apply_strategy')+'</button>'
-    +(predicted?'<button class="btn btn-sm btn-green" onclick="lockAiBest(\''+safeSite+'\',\''+esc(predicted).replace(/'/g,"\\'")+'\')">'+t('lock_ai_best')+'</button>':'')
+    +(predicted?'<button class="btn btn-sm btn-green" onclick="lockAiBest(\''+safeSite+'\',\''+jsArg(predicted)+'\')">'+t('lock_ai_best')+'</button>':'')
     +'</div>';
 }
 async function setSiteStrategy(site,strategy){
@@ -1262,8 +1262,8 @@ function renderSiteDomains(sites){
     if(!doms.length)return;
     h+='<div style="margin-bottom:8px;"><div style="font-family:monospace;font-size:11px;font-weight:700;color:#7289da;margin-bottom:4px;">'+esc(s)+'</div><div class="site-domains">';
     doms.forEach(d=>{
-      const se=esc(d).replace(/'/g,"\\'");
-      h+='<span class="site-dom-tag"><span style="color:#b0b8d1">'+esc(d)+'</span><span class="dom-del" onclick="removeDom(\''+esc(s).replace(/'/g,"\\'")+'\',\''+se+'\')">&times;</span></span>';
+      const se=jsArg(d);
+      h+='<span class="site-dom-tag"><span style="color:#b0b8d1">'+esc(d)+'</span><span class="dom-del" onclick="removeDom(\''+jsArg(s)+'\',\''+se+'\')">&times;</span></span>';
     });
     h+='</div></div>';
   });
@@ -1365,7 +1365,7 @@ function renderBypass(list,defaults){
   if(list&&list.length){
     h+='<div style="margin-bottom:6px;"><div class="sec-title" style="margin-bottom:6px;">'+t('custom_bypass')+'</div><div style="display:flex;flex-wrap:wrap;gap:5px;">';
     list.forEach(e=>{
-      const se=esc(e).replace(/'/g,"\\'");
+      const se=jsArg(e);
       h+='<div style="display:inline-flex;align-items:center;background:var(--surface2);padding:4px 10px;border-radius:6px;gap:6px;border:1px solid var(--border);">'
         +'<span style="font-size:11px;font-family:var(--mono)">'+esc(e)+'</span>'
         +'<span style="cursor:pointer;color:var(--red);font-weight:bold;font-size:13px;opacity:.6;transition:opacity .2s;" onmouseover="this.style.opacity=1" onmouseout="this.style.opacity=.6" onclick="removeB(\''+se+'\')">&times;</span>'
@@ -1425,6 +1425,8 @@ function copyLogs(){
 }
 function fU(s){const h=Math.floor(s/3600),m=Math.floor(s%3600/60),sc=s%60;return h>0?h+'h '+m+'m':m>0?m+'m '+sc+'s':sc+'s'}
 function esc(t){const d=document.createElement('div');d.textContent=t;return d.innerHTML}
+function escA(v){return String(v==null?'':v).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;')}
+function jsArg(v){return escA(String(v==null?'':v).replace(/\\/g,'\\\\').replace(/'/g,"\\'").replace(/[\r\n]+/g,' '))}
 let _lf={all:true,privacy:false,bypass:false,pass:false,http:false,error:false};
 function _lfMatch(lt){if(_lf.all)return true;if(_lf[lt])return true;if(!_lf.privacy&&!_lf.bypass&&!_lf.pass&&!_lf.http&&!_lf.error)return true;return false}
 function toggleLF(btn){
@@ -1495,7 +1497,7 @@ function renderAI(ai,sites){
       if(a.top_3&&a.top_3.length>1){
         h+='<span style="color:var(--text3);font-size:9px;margin-left:auto;">';
         a.top_3.slice(1).forEach(p=>{
-          h+='<span style="color:'+(sC[p.strategy]||'#585e78')+';margin-left:4px;">'+p.strategy.slice(0,6)+':'+Math.round(p.score*100)+'</span>';
+          h+='<span style="color:'+(sC[p.strategy]||'#585e78')+';margin-left:4px;">'+esc(p.strategy.slice(0,6))+':'+Math.round(p.score*100)+'</span>';
         });
         h+='</span>';
       }
@@ -1622,8 +1624,8 @@ async function pollTraining(){
     let ph='';
     if(d.progress){Object.keys(d.progress).forEach(s=>{
       const p=d.progress[s];
-      ph+='<div style="margin-bottom:6px;"><span style="color:#fff;font-size:11px;font-weight:600;">'+s+'</span> ';
-      ph+='<span style="color:var(--text3);font-size:10px;">'+p.current_strat+' ('+p.tested+'/'+p.total+')</span>';
+      ph+='<div style="margin-bottom:6px;"><span style="color:#fff;font-size:11px;font-weight:600;">'+esc(s)+'</span> ';
+      ph+='<span style="color:var(--text3);font-size:10px;">'+esc(p.current_strat)+' ('+p.tested+'/'+p.total+')</span>';
       ph+='<div style="background:var(--surface3);border-radius:4px;height:4px;margin-top:3px;"><div style="background:linear-gradient(90deg,var(--accent),var(--purple));height:100%;border-radius:4px;width:'+p.pct+'%;transition:width .3s;"></div></div></div>';
     })}
     document.getElementById('trainProgress').innerHTML=ph||'<div style="color:var(--accent);font-size:11px;">'+t('training_progress')+'</div>';
@@ -1636,12 +1638,12 @@ async function pollTraining(){
         const rs=d.results[s];
         const canRevert=d.previous_strategies&&d.previous_strategies[s]!==undefined;
         rh+='<div style="background:var(--surface2);border-radius:8px;padding:10px;margin-bottom:6px;display:flex;align-items:center;justify-content:space-between;gap:8px;">';
-        rh+='<div><span style="color:#fff;font-weight:600;font-size:11px;">'+s+'</span><br>';
-        if(rs.best_strategy){rh+='<span style="color:var(--green);font-size:10px;font-weight:700;">'+rs.best_strategy+'</span> <span style="color:var(--text3);font-size:9px;">'+rs.best_ms+'ms ('+rs.success_count+'/'+rs.total_tested+')</span>';}
+        rh+='<div><span style="color:#fff;font-weight:600;font-size:11px;">'+esc(s)+'</span><br>';
+        if(rs.best_strategy){rh+='<span style="color:var(--green);font-size:10px;font-weight:700;">'+esc(rs.best_strategy)+'</span> <span style="color:var(--text3);font-size:9px;">'+rs.best_ms+'ms ('+rs.success_count+'/'+rs.total_tested+')</span>';}
         else{rh+='<span style="color:var(--red);font-size:10px;">'+t('no_improvement')+'</span>';}
         rh+='</div><div style="display:flex;gap:4px;">';
-        if(rs.best_strategy){rh+='<button class="btn btn-sm btn-green" onclick="applyTraining(\''+s+'\')">'+t('apply_strategy')+'</button>';}
-        if(canRevert){rh+='<button class="btn btn-sm btn-red" onclick="revertTraining(\''+s+'\')">'+t('revert_strategy')+'</button>';}
+        if(rs.best_strategy){rh+='<button class="btn btn-sm btn-green" onclick="applyTraining(\''+jsArg(s)+'\')">'+t('apply_strategy')+'</button>';}
+        if(canRevert){rh+='<button class="btn btn-sm btn-red" onclick="revertTraining(\''+jsArg(s)+'\')">'+t('revert_strategy')+'</button>';}
         rh+='</div></div>';
       })}
       document.getElementById('trainResults').innerHTML=rh;

@@ -12,6 +12,7 @@ import random as _rng
 import time
 from typing import Any, Callable, Iterable
 
+from .config import atomic_write_json
 from .strategy_catalog import (
     STRATEGY_GROUPS,
     STRATEGY_ORDER,
@@ -60,7 +61,11 @@ class StrategyCache:
     def _load(self) -> None:
         try:
             with open(self.cache_file, "r", encoding="utf-8") as f:
-                self._data = json.load(f)
+                loaded = json.load(f)
+            if not isinstance(loaded, dict) or not isinstance(loaded.get("sites", {}), dict):
+                raise ValueError("unexpected strategy cache format")
+            loaded.setdefault("sites", {})
+            self._data = loaded
             self.logger.info(f"Strategy cache loaded: {len(self._data.get('sites', {}))} sites")
         except FileNotFoundError:
             pass
@@ -73,8 +78,7 @@ class StrategyCache:
 
     def _do_save(self) -> None:
         try:
-            with open(self.cache_file, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, indent=2, ensure_ascii=False)
+            atomic_write_json(self.cache_file, self._data, indent=2, ensure_ascii=False)
             self._dirty = False
             self._last_save = time.time()
         except Exception as e:
@@ -376,8 +380,7 @@ class AdaptiveStrategyEngine:
             for site_name, nn in self._nn_cache.items():
                 if site_name in self._data.get("sites", {}):
                     self._data["sites"][site_name]["nn_weights"] = nn.to_dict()
-            with open(self.model_file, "w", encoding="utf-8") as f:
-                json.dump(self._data, f, ensure_ascii=False)
+            atomic_write_json(self.model_file, self._data, indent=None, ensure_ascii=False)
             self._dirty = False
             self._last_save = time.time()
         except Exception as e:

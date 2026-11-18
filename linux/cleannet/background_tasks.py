@@ -116,7 +116,7 @@ class BackgroundTaskManager:
 
         start = self.ctx.perf_counter()
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await asyncio.wait_for(
                 loop.run_in_executor(
                     None,
@@ -150,38 +150,49 @@ class BackgroundTaskManager:
 
     async def health_check_loop(self) -> None:
         await self.ctx.sleep(5)
-        await self.ctx.resolve_bypass_ips()
-        await self.measure_ping()
-        if self.ctx.ensure_proxy_enabled and self.ctx.should_manage_proxy():
-            self.ctx.ensure_proxy_enabled()
-        if self.ctx.should_manage_proxy():
-            self.ctx.notify(
-                "DPI Bypass",
-                f"Active - {len(self.ctx.get_bypass_ips())} IPs, {len(self.ctx.get_bypass_domains())} domains",
-            )
-        else:
-            self.ctx.notify("CleanNet Setup", "Waiting for first-run confirmation")
+        try:
+            await self.ctx.resolve_bypass_ips()
+            await self.measure_ping()
+            if self.ctx.ensure_proxy_enabled and self.ctx.should_manage_proxy():
+                self.ctx.ensure_proxy_enabled()
+            if self.ctx.should_manage_proxy():
+                self.ctx.notify(
+                    "DPI Bypass",
+                    f"Active - {len(self.ctx.get_bypass_ips())} IPs, {len(self.ctx.get_bypass_domains())} domains",
+                )
+            else:
+                self.ctx.notify("CleanNet Setup", "Waiting for first-run confirmation")
+        except Exception as exc:
+            self.ctx.logger.error(f"[HEALTH] Startup check failed: {exc}")
 
         last_ip_update = self.ctx.time_func()
         while self.ctx.get_running():
             await self.ctx.sleep(self.ctx.health_check_interval)
             if not self.ctx.get_running():
                 break
-            await self.measure_ping()
-            self.ctx.strategy_cache._save_if_needed()
-            self.ctx.save_stats()
-            if self.ctx.ensure_proxy_enabled and self.ctx.should_manage_proxy():
-                self.ctx.ensure_proxy_enabled()
+            # Tasks are fire-and-forget: an uncaught exception here used to end health
+            # checks, stats saving and IP refreshes for the rest of the session.
+            try:
+                await self.measure_ping()
+                self.ctx.strategy_cache._save_if_needed()
+                self.ctx.save_stats()
+                if self.ctx.ensure_proxy_enabled and self.ctx.should_manage_proxy():
+                    self.ctx.ensure_proxy_enabled()
 
-            if self.ctx.time_func() - last_ip_update > self.ctx.ip_update_interval:
-                await self.ctx.resolve_bypass_ips()
-                last_ip_update = self.ctx.time_func()
+                if self.ctx.time_func() - last_ip_update > self.ctx.ip_update_interval:
+                    last_ip_update = self.ctx.time_func()
+                    await self.ctx.resolve_bypass_ips()
+            except Exception as exc:
+                self.ctx.logger.error(f"[HEALTH] Health check iteration failed: {exc}")
 
     async def proxy_ownership_loop(self) -> None:
         await self.ctx.sleep(2)
         while self.ctx.get_running():
-            if self.ctx.ensure_proxy_enabled and self.ctx.should_manage_proxy():
-                self.ctx.ensure_proxy_enabled()
+            try:
+                if self.ctx.ensure_proxy_enabled and self.ctx.should_manage_proxy():
+                    self.ctx.ensure_proxy_enabled()
+            except Exception as exc:
+                self.ctx.logger.error(f"[PROXY] Ownership check failed: {exc}")
             await self.ctx.sleep(self.ctx.proxy_watch_interval)
 
     async def strategy_retest_loop(self) -> None:
@@ -189,15 +200,21 @@ class BackgroundTaskManager:
             await self.ctx.sleep(self.ctx.strategy_retest_interval)
             if not self.ctx.get_running():
                 break
-            now = self.ctx.time_func()
-            for _site_name, site_data in self.ctx.strategy_cache.iter_site_data():
-                if site_data.get("best_strategy"):
-                    continue
-                expired = []
-                for strategy, fail_info in site_data.get("failures", {}).items():
-                    last_fail = self.ctx.parse_iso(fail_info.get("last_fail", ""))
-                    if last_fail and (now - last_fail) > self.ctx.strategy_retest_interval:
-                        expired.append(strategy)
-                for strategy in expired:
-                    del site_data["failures"][strategy]
-            self.ctx.strategy_cache._save_if_needed()
+            try:
+                self._expire_old_failures()
+            except Exception as exc:
+                self.ctx.logger.error(f"[RETEST] Failure expiry failed: {exc}")
+
+    def _expire_old_failures(self) -> None:
+        now = self.ctx.time_func()
+        for _site_name, site_data in self.ctx.strategy_cache.iter_site_data():
+            if site_data.get("best_strategy"):
+                continue
+            expired = []
+            for strategy, fail_info in site_data.get("failures", {}).items():
+                last_fail = self.ctx.parse_iso(fail_info.get("last_fail", ""))
+                if last_fail and (now - last_fail) > self.ctx.strategy_retest_interval:
+                    expired.append(strategy)
+            for strategy in expired:
+                del site_data["failures"][strategy]
+        self.ctx.strategy_cache._save_if_needed()

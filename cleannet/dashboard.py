@@ -12,6 +12,7 @@ import tempfile
 import time
 from functools import lru_cache
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlsplit
 
 from .config_service import (
     ALLOWED_HEALTH_CHECK_INTERVALS,
@@ -22,6 +23,7 @@ from .config_service import (
 )
 from .config_defaults import get_bypass_preset_options
 from .diagnostics import build_diagnostics_snapshot
+from .proxy import split_host_port
 from .strategy_advisor import build_strategy_recommendations
 from .windows_integration import get_proxy_summary
 
@@ -85,6 +87,15 @@ class DashboardRuntimeContext:
     local_host: str
     local_port: int
     strategy_names: list[str]
+    web_port: int = 8888
+
+
+LOCAL_DASHBOARD_HOSTS = {"127.0.0.1", "localhost", "::1"}
+MAX_JSON_BODY_BYTES = 65536
+
+
+class RequestBodyTooLarge(ValueError):
+    pass
 
 
 def _close_writer(writer: Writer | None) -> None:
@@ -109,9 +120,75 @@ class DashboardServer:
             )
         )
 
-    async def _read_json(self, reader: Reader, limit: int) -> dict[str, Any]:
-        body_bytes = await reader.read(limit)
-        return json.loads(body_bytes.decode()) if body_bytes else {}
+    async def _read_json(self, reader: Reader, headers: dict[str, str], limit: int) -> dict[str, Any]:
+        """Read a JSON request body.
+
+        Honors Content-Length so bodies split across TCP segments (large config
+        imports) are read completely instead of being cut at the first chunk.
+        """
+        length_header = headers.get("content-length")
+        if length_header is None:
+            body_bytes = await reader.read(limit)
+        else:
+            try:
+                length = int(length_header)
+            except ValueError:
+                raise RequestBodyTooLarge("invalid Content-Length")
+            if length < 0 or length > limit:
+                raise RequestBodyTooLarge(f"body exceeds {limit} bytes")
+            body_bytes = b""
+            while len(body_bytes) < length:
+                chunk = await asyncio.wait_for(reader.read(length - len(body_bytes)), timeout=10)
+                if not chunk:
+                    break
+                body_bytes += chunk
+        return json.loads(body_bytes.decode("utf-8")) if body_bytes else {}
+
+    def _is_local_authority(self, host: str | None, port: int | None, *, port_required: bool) -> bool:
+        if not host or host.lower() not in LOCAL_DASHBOARD_HOSTS:
+            return False
+        if port is None:
+            return not port_required
+        return port == self.ctx.web_port
+
+    def is_request_allowed(self, method: str, headers: dict[str, str]) -> bool:
+        """Reject DNS-rebinding and cross-site (CSRF) requests to the local API.
+
+        * Host must name the loopback dashboard; a rebinding attack arrives with the
+          attacker's hostname in Host even though it resolves to 127.0.0.1.
+        * State-changing requests must come from the dashboard page itself. Browsers
+          always send Origin on cross-origin POSTs, and "simple" POSTs (no custom
+          headers) skip the CORS preflight, so without this check any website could
+          change CleanNet's config or trigger the UAC fix.
+        """
+        host_header = headers.get("host")
+        if host_header is not None:
+            split = split_host_port(host_header)
+            if not split or not self._is_local_authority(split[0], split[1], port_required=False):
+                return False
+        if method in ("GET", "HEAD", "OPTIONS"):
+            # Cross-origin reads are already blocked by the browser (no CORS headers);
+            # the Host check above covers DNS rebinding.
+            return True
+        if headers.get("sec-fetch-site") == "cross-site":
+            return False
+        origin = headers.get("origin")
+        if origin is None:
+            return True
+        try:
+            parsed = urlsplit(origin)
+            origin_port = parsed.port
+        except ValueError:
+            return False
+        if parsed.scheme != "http":
+            return False
+        return self._is_local_authority(parsed.hostname, origin_port, port_required=True)
+
+    async def _network_snapshot(self) -> dict[str, Any]:
+        # netstat/tasklist take hundreds of milliseconds; running them on the event
+        # loop stalled every proxied connection while the dashboard was open.
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(None, self.ctx.get_network_flows)
 
     async def _send(
         self,
@@ -213,7 +290,11 @@ class DashboardServer:
             "custom_proxy_bypass_count": len(self.ctx.get_config().get("proxy_bypass", [])),
         }
 
-    def add_network_exception(self, payload: dict[str, Any]) -> tuple[dict[str, Any], bool]:
+    def add_network_exception(
+        self,
+        payload: dict[str, Any],
+        network_snapshot: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], bool]:
         entries: list[str] = []
         source = str(payload.get("source") or "network-flow")
         if payload.get("entry"):
@@ -223,7 +304,7 @@ class DashboardServer:
                 pid = int(payload.get("pid"))
             except (TypeError, ValueError):
                 return {"ok": False, "error": "invalid pid"}, False
-            snapshot = self.ctx.get_network_flows()
+            snapshot = network_snapshot if network_snapshot is not None else self.ctx.get_network_flows()
             for flow in snapshot.get("flows", []):
                 if int(flow.get("pid") or 0) == pid and flow.get("exception_entry"):
                     entries.append(str(flow["exception_entry"]))
@@ -246,7 +327,7 @@ class DashboardServer:
         )
         return {"ok": True, "changed": result.changed, "entries": unique_entries}, True
 
-    def get_stats_data(self) -> dict[str, Any]:
+    def get_stats_data(self, network_snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
         config = self.ctx.get_config()
         site_data = {}
         active_connections = self.ctx.get_active_connections()
@@ -291,7 +372,8 @@ class DashboardServer:
         start_time = self.ctx.get_start_time()
         self_train = self.ctx.self_train_state
         performance = self._performance_payload()
-        network_snapshot = self.ctx.get_network_flows()
+        if network_snapshot is None:
+            network_snapshot = self.ctx.get_network_flows()
         network_summary = network_snapshot.get("summary", {})
         proxy = get_proxy_summary(self.ctx.script_dir, self.ctx.local_host, self.ctx.local_port)
         network_diagnostics = self.build_network_diagnostics(
@@ -339,15 +421,19 @@ class DashboardServer:
             },
         }
 
-    def get_sse_data(self, last_log_id: int) -> tuple[dict[str, Any], int]:
+    def get_sse_data(
+        self,
+        last_log_id: int,
+        network_snapshot: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], int]:
         entries = self.ctx.dashboard_log_handler.get_entries_after(last_log_id)
         new_id = entries[-1][0] if entries else last_log_id
-        data = self.get_stats_data()
+        data = self.get_stats_data(network_snapshot)
         data["new_logs"] = [msg for _, msg in entries]
         return data, new_id
 
-    def build_diagnostics_data(self) -> dict[str, Any]:
-        stats_data = self.get_stats_data()
+    def build_diagnostics_data(self, network_snapshot: dict[str, Any] | None = None) -> dict[str, Any]:
+        stats_data = self.get_stats_data(network_snapshot)
         return build_diagnostics_snapshot(
             version=self.ctx.version,
             status=self.ctx.get_status(),
@@ -371,14 +457,28 @@ class DashboardServer:
                 return
 
             parts = request_line.decode(errors="ignore").strip().split(" ")
-            method = parts[0] if parts else "GET"
+            method = (parts[0] if parts else "GET").upper()
             path = parts[1] if len(parts) > 1 else "/"
             path = path.split("?", 1)[0]
 
+            headers: dict[str, str] = {}
+            header_bytes = 0
             while True:
-                line = await reader.readline()
-                if line == b"\r\n" or not line:
+                line = await asyncio.wait_for(reader.readline(), timeout=5)
+                if line in (b"\r\n", b"\n") or not line:
                     break
+                header_bytes += len(line)
+                if header_bytes > 32 * 1024:
+                    await self._send(writer, "431 Request Header Fields Too Large", b"")
+                    return
+                name, sep, value = line.decode("latin-1").partition(":")
+                if sep:
+                    headers[name.strip().lower()] = value.strip()
+
+            if not self.is_request_allowed(method, headers):
+                self.ctx.logger.warning(f"[DASHBOARD] Rejected {method} {path} (foreign Host/Origin)")
+                await self._send(writer, "403 Forbidden", b'{"error":"forbidden"}', content_type="application/json")
+                return
 
             config = self.ctx.get_config()
 
@@ -391,7 +491,7 @@ class DashboardServer:
                 )
 
             elif path == "/api/stats":
-                await self._send_json(writer, self.get_stats_data())
+                await self._send_json(writer, self.get_stats_data(await self._network_snapshot()))
 
             elif path == "/api/events":
                 writer.write(
@@ -401,7 +501,7 @@ class DashboardServer:
                 await writer.drain()
                 last_log_id = 0
                 while self.ctx.get_running():
-                    data, last_log_id = self.get_sse_data(last_log_id)
+                    data, last_log_id = self.get_sse_data(last_log_id, await self._network_snapshot())
                     try:
                         writer.write(f"data: {json.dumps(data)}\n\n".encode())
                         await writer.drain()
@@ -421,7 +521,7 @@ class DashboardServer:
 
             elif path == "/api/toggle-site" and method == "POST":
                 try:
-                    req_data = await self._read_json(reader, 1024)
+                    req_data = await self._read_json(reader, headers, 1024)
                     result = self.config_service.toggle_site(req_data.get("site"))
                     self._refresh_ips_if_needed(result)
                 except Exception as e:
@@ -430,7 +530,7 @@ class DashboardServer:
 
             elif path == "/api/remove-site" and method == "POST":
                 try:
-                    req_data = await self._read_json(reader, 1024)
+                    req_data = await self._read_json(reader, headers, 1024)
                     self.config_service.remove_site(req_data.get("site"))
                 except Exception as e:
                     self.ctx.logger.error(f"Remove site error: {e}")
@@ -446,11 +546,11 @@ class DashboardServer:
             elif path == "/api/resolve-domain" and method == "POST":
                 result = {"domain": "", "ips": [], "variants": []}
                 try:
-                    req_data = await self._read_json(reader, 1024)
+                    req_data = await self._read_json(reader, headers, 1024)
                     domain = req_data.get("domain", "").strip().lower()
                     if domain:
                         result["domain"] = domain
-                        loop = asyncio.get_event_loop()
+                        loop = asyncio.get_running_loop()
                         ips = await loop.run_in_executor(None, self.ctx.resolve_domain_doh, domain)
                         result["ips"] = ips
                         variants = []
@@ -466,7 +566,7 @@ class DashboardServer:
 
             elif path == "/api/add-site" and method == "POST":
                 try:
-                    req_data = await self._read_json(reader, 4096)
+                    req_data = await self._read_json(reader, headers, 32768)
                     result = self.config_service.add_site(req_data)
                     self._refresh_ips_if_needed(result)
                 except Exception as e:
@@ -475,7 +575,7 @@ class DashboardServer:
 
             elif path == "/api/add-cdn" and method == "POST":
                 try:
-                    req_data = await self._read_json(reader, 2048)
+                    req_data = await self._read_json(reader, headers, 2048)
                     site_name = req_data.get("site", "").strip()
                     cdn_domain = req_data.get("domain", "").strip().lower()
                     result = self.config_service.add_cdn_domain(site_name, cdn_domain)
@@ -486,7 +586,7 @@ class DashboardServer:
 
             elif path == "/api/remove-domain" and method == "POST":
                 try:
-                    req_data = await self._read_json(reader, 2048)
+                    req_data = await self._read_json(reader, headers, 2048)
                     site_name = req_data.get("site", "").strip()
                     domain = req_data.get("domain", "").strip().lower()
                     result = self.config_service.remove_domain(site_name, domain)
@@ -533,7 +633,7 @@ class DashboardServer:
 
             elif path == "/api/performance-settings" and method == "POST":
                 try:
-                    req_data = await self._read_json(reader, 2048)
+                    req_data = await self._read_json(reader, headers, 2048)
                     if not self._valid_performance_payload(req_data):
                         await self._send(
                             writer,
@@ -554,12 +654,13 @@ class DashboardServer:
                     )
 
             elif path == "/api/network-flows":
-                await self._send_json(writer, self.ctx.get_network_flows())
+                await self._send_json(writer, await self._network_snapshot())
 
             elif path == "/api/network-exception" and method == "POST":
                 try:
-                    req_data = await self._read_json(reader, 2048)
-                    payload, ok = self.add_network_exception(req_data)
+                    req_data = await self._read_json(reader, headers, 2048)
+                    snapshot = await self._network_snapshot() if req_data.get("mode") == "current-process-endpoints" else None
+                    payload, ok = self.add_network_exception(req_data, snapshot)
                     if ok:
                         await self._send_json(writer, payload)
                     else:
@@ -590,7 +691,7 @@ class DashboardServer:
 
             elif path == "/api/site-strategy" and method == "POST":
                 try:
-                    req_data = await self._read_json(reader, 2048)
+                    req_data = await self._read_json(reader, headers, 2048)
                     site_name = req_data.get("site", "")
                     strategy = req_data.get("strategy", "")
                     valid_strategies = set(self.ctx.strategy_names)
@@ -631,7 +732,7 @@ class DashboardServer:
 
             elif path == "/api/ai-train-intensity" and method == "POST":
                 try:
-                    body_data = await self._read_json(reader, 1024)
+                    body_data = await self._read_json(reader, headers, 1024)
                     new_intensity = body_data.get("intensity", "light")
                     if self.ctx.ai_engine.set_train_intensity(new_intensity):
                         self.ctx.set_ai_train_intensity(self.ctx.ai_engine.train_intensity)
@@ -681,7 +782,7 @@ class DashboardServer:
 
             elif path == "/api/train-apply" and method == "POST":
                 try:
-                    req_data = await self._read_json(reader, 1024)
+                    req_data = await self._read_json(reader, headers, 1024)
                     site_name = req_data.get("site", "")
                     if site_name:
                         self.ctx.apply_training(site_name)
@@ -691,7 +792,7 @@ class DashboardServer:
 
             elif path == "/api/train-revert" and method == "POST":
                 try:
-                    req_data = await self._read_json(reader, 1024)
+                    req_data = await self._read_json(reader, headers, 1024)
                     site_name = req_data.get("site", "")
                     if site_name:
                         self.ctx.revert_training(site_name)
@@ -701,7 +802,7 @@ class DashboardServer:
 
             elif path == "/api/add-bypass" and method == "POST":
                 try:
-                    req_data = await self._read_json(reader, 1024)
+                    req_data = await self._read_json(reader, headers, 1024)
                     self.config_service.add_bypass(req_data.get("entry", ""))
                 except Exception as e:
                     self.ctx.logger.error(f"Add bypass error: {e}")
@@ -709,7 +810,7 @@ class DashboardServer:
 
             elif path == "/api/remove-bypass" and method == "POST":
                 try:
-                    req_data = await self._read_json(reader, 1024)
+                    req_data = await self._read_json(reader, headers, 1024)
                     self.config_service.remove_bypass(req_data.get("entry", ""))
                 except Exception as e:
                     self.ctx.logger.error(f"Remove bypass error: {e}")
@@ -724,7 +825,7 @@ class DashboardServer:
 
             elif path == "/api/load-preset" and method == "POST":
                 try:
-                    req_data = await self._read_json(reader, 1024)
+                    req_data = await self._read_json(reader, headers, 1024)
                     self.config_service.load_preset(req_data.get("preset", ""))
                 except Exception as e:
                     self.ctx.logger.error(f"Load preset error: {e}")
@@ -740,7 +841,7 @@ class DashboardServer:
 
             elif path == "/api/privacy-setting" and method == "POST":
                 try:
-                    req_data = await self._read_json(reader, 1024)
+                    req_data = await self._read_json(reader, headers, 1024)
                     key = req_data.get("key", "")
                     value = bool(req_data.get("value", False))
                     if not self.config_service.set_privacy(key, value):
@@ -766,7 +867,7 @@ class DashboardServer:
 
             elif path == "/api/test-site" and method == "POST":
                 try:
-                    req_data = await self._read_json(reader, 1024)
+                    req_data = await self._read_json(reader, headers, 1024)
                     site_name = req_data.get("site", "")
                     if site_name and site_name in config.get("sites", {}):
                         asyncio.create_task(self.ctx.test_site_connection(site_name))
@@ -793,14 +894,18 @@ class DashboardServer:
                 await self._send(
                     writer,
                     "200 OK",
-                    json.dumps(self.build_diagnostics_data(), indent=2, ensure_ascii=False).encode("utf-8"),
+                    json.dumps(
+                        self.build_diagnostics_data(await self._network_snapshot()),
+                        indent=2,
+                        ensure_ascii=False,
+                    ).encode("utf-8"),
                     content_type="application/json",
                     headers=[("Content-Disposition", 'attachment; filename="cleannet_diagnostics.json"')],
                 )
 
             elif path == "/api/import-config" and method == "POST":
                 try:
-                    new_config = await self._read_json(reader, 65536)
+                    new_config = await self._read_json(reader, headers, MAX_JSON_BODY_BYTES)
                     result = self.config_service.import_config(new_config)
                     if result.changed:
                         self._refresh_ips_if_needed(result)
@@ -812,11 +917,18 @@ class DashboardServer:
                             b'{"error":"Invalid config: missing sites"}',
                             content_type="application/json",
                         )
-                except json.JSONDecodeError:
+                except (json.JSONDecodeError, UnicodeDecodeError):
                     await self._send(
                         writer,
                         "400 Bad Request",
                         b'{"error":"Invalid JSON"}',
+                        content_type="application/json",
+                    )
+                except RequestBodyTooLarge:
+                    await self._send(
+                        writer,
+                        "413 Payload Too Large",
+                        b'{"error":"Config file too large"}',
                         content_type="application/json",
                     )
                 except Exception as e:
@@ -859,8 +971,11 @@ class DashboardServer:
                         "Write-Host 'To review these exemptions later (as admin): CheckNetIsolation LoopbackExempt -s' -ForegroundColor DarkGray",
                         "Read-Host 'Press Enter to close'",
                     ]
-                    ps_path = os.path.join(tempfile.gettempdir(), "cleannet_uwp_fix.ps1")
-                    with open(ps_path, "w", encoding="utf-8") as f:
+                    # Unique, exclusively created file: a fixed name in %TEMP% could be
+                    # swapped by another local process between writing it and the elevated
+                    # PowerShell reading it, which would run that code as Administrator.
+                    fd, ps_path = tempfile.mkstemp(prefix="cleannet_uwp_fix_", suffix=".ps1")
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
                         f.write("\r\n".join(ps_lines) + "\r\n")
                     ctypes.windll.shell32.ShellExecuteW(
                         None,

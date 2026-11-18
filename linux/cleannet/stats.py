@@ -6,6 +6,8 @@ import copy
 import json
 from typing import Any
 
+from .config import atomic_write_json
+
 
 def load_stats_file(path: str, defaults: dict[str, Any], logger=None):
     stats = copy.deepcopy(defaults.get("global", {}))
@@ -31,8 +33,7 @@ def load_stats_file(path: str, defaults: dict[str, Any], logger=None):
 
 def save_stats_file(path: str, stats: dict[str, Any], site_stats: dict[str, Any], logger=None) -> None:
     try:
-        with open(path, "w", encoding="utf-8") as f:
-            json.dump({"global": stats, "sites": site_stats}, f, indent=2)
+        atomic_write_json(path, {"global": stats, "sites": site_stats}, indent=2)
     except Exception as e:
         if logger:
             logger.error(f"Stats save error: {e}")

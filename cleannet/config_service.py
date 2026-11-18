@@ -2,11 +2,51 @@
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
+import re
 from typing import Any, Callable
+from urllib.parse import urlsplit
+
+from .config import validate_config
 
 ALLOWED_HEALTH_CHECK_INTERVALS = {60, 120, 300}
 ALLOWED_IP_UPDATE_INTERVALS = {300, 900, 1800, 3600}
+
+_HOSTNAME_RE = re.compile(r"^(?=.{1,253}$)([a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?)(\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9])?)*$")
+
+
+def normalize_domain(value: Any) -> str:
+    """Reduce user input such as ``https://www.Example.com/path`` to ``www.example.com``.
+
+    Returns an empty string when the value is not a plausible hostname.
+    """
+    raw = str(value or "").strip().lower()
+    if not raw:
+        return ""
+    if "://" not in raw:
+        raw = "//" + raw
+    try:
+        host = urlsplit(raw).hostname or ""
+    except ValueError:
+        return ""
+    host = host.rstrip(".")
+    try:
+        host = host.encode("idna").decode("ascii")
+    except UnicodeError:
+        return ""
+    return host if _HOSTNAME_RE.match(host) else ""
+
+
+def _normalize_domain_list(values: Any) -> list[str]:
+    if not isinstance(values, list):
+        return []
+    result: list[str] = []
+    for value in values:
+        domain = normalize_domain(value)
+        if domain and domain not in result:
+            result.append(domain)
+    return result
 
 
 @dataclass(frozen=True)
@@ -63,27 +103,51 @@ class ConfigMutationService:
 
     def add_site(self, req_data: dict[str, Any]) -> MutationResult:
         config = self._config()
-        domain = req_data.get("domain", "").strip().lower()
+        domain = normalize_domain(req_data.get("domain", ""))
         if not domain:
             return MutationResult()
 
-        base_name = domain.replace("www.", "").split(".")[0]
-        domains = req_data.get("domains", [domain, f"www.{domain}"])
-        ips = req_data.get("ips", [])
-        dns_resolve = req_data.get("dns_resolve", list(domains))
-        config.setdefault("sites", {})
-        config["sites"][base_name] = {
-            "enabled": True,
-            "domains": domains,
-            "dns_resolve": dns_resolve,
-            "ips": ips,
-        }
+        bare = domain[4:] if domain.startswith("www.") else domain
+        base_name = bare.split(".")[0]
+        if "domains" in req_data:
+            domains = _normalize_domain_list(req_data.get("domains"))
+        else:
+            domains = [bare, f"www.{bare}"]
+        if domain not in domains and bare not in domains:
+            domains.insert(0, domain)
+        if "dns_resolve" in req_data:
+            dns_resolve = _normalize_domain_list(req_data.get("dns_resolve"))
+        else:
+            dns_resolve = list(domains)
+        raw_ips = req_data.get("ips", [])
+        ips = [str(ip).strip() for ip in raw_ips if str(ip).strip()] if isinstance(raw_ips, list) else []
+
+        sites = config.setdefault("sites", {})
+        existing = sites.get(base_name)
+        if isinstance(existing, dict):
+            # Adding e.g. "discord.gg" next to an existing "discord" site must not wipe the
+            # existing site's domains, IPs and locked strategy; merge into it instead.
+            for key, values in (("domains", domains), ("dns_resolve", dns_resolve), ("ips", ips)):
+                merged = list(existing.get(key) or [])
+                for value in values:
+                    if value not in merged:
+                        merged.append(value)
+                existing[key] = merged
+            existing["enabled"] = True
+            self.ctx.logger.info(f"Site updated: {base_name} (+{len(domains)} domains)")
+        else:
+            sites[base_name] = {
+                "enabled": True,
+                "domains": domains,
+                "dns_resolve": dns_resolve,
+                "ips": ips,
+            }
         self._save_and_reload()
         return MutationResult(changed=True, refresh_ips=True)
 
     def add_cdn_domain(self, site_name: str, cdn_domain: str) -> MutationResult:
         config = self._config()
-        cdn_domain = cdn_domain.strip().lower()
+        cdn_domain = normalize_domain(cdn_domain)
         if not site_name or not cdn_domain or site_name not in config.get("sites", {}):
             return MutationResult()
 
@@ -258,10 +322,20 @@ class ConfigMutationService:
         return MutationResult(changed=True)
 
     def import_config(self, new_config: dict[str, Any]) -> MutationResult:
-        if "sites" not in new_config:
+        if not isinstance(new_config, dict) or not isinstance(new_config.get("sites"), dict):
             return MutationResult()
         config = self._config()
-        config.update(new_config)
+        # Validate a merged copy first: an imported file with wrong types used to be
+        # written straight into the live config and crash later readers.
+        candidate = copy.deepcopy(config)
+        candidate.update(copy.deepcopy(new_config))
+        validated, errors = validate_config(candidate)
+        if validated is None:
+            return MutationResult()
+        for err in errors:
+            self.ctx.logger.warning(f"[CONFIG] Import: {err}")
+        config.clear()
+        config.update(validated)
         self._save_and_reload()
         self.ctx.logger.info("Config imported successfully")
         return MutationResult(changed=True, refresh_ips=True)

@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.1.5 - 2026-11-18
+
+- Same security and reliability fixes as the Windows build: the dashboard API rejects cross-site and DNS-rebinding requests, complete ClientHello reads, atomic settings files, safer site import/add, and background tasks that survive errors.
+
 ## 2.1.4 - 2026-07-09
 
 - Fixed the same passthrough connectivity bug as the Windows build: on networks that advertise IPv6 but cannot route it, hostname connections to dual-stack sites (for example YouTube and Kick) hung on the dead IPv6 address until the 10-second connect timeout expired. Upstream connections now use Happy Eyeballs (RFC 8305), racing IPv6 and IPv4 with a 250 ms stagger. Networks with working IPv6 and IPv4-only sites are unaffected.
